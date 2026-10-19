@@ -15,6 +15,17 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
+GRAFANA_PASSWORD_FILE="$ROOT/.grafana-admin-password"
+if [ ! -s "$GRAFANA_PASSWORD_FILE" ]; then
+  if ! command -v openssl >/dev/null 2>&1; then
+    echo "OpenSSL не найден: он нужен для генерации пароля Grafana." >&2
+    exit 1
+  fi
+  umask 077
+  openssl rand -hex 32 >"$GRAFANA_PASSWORD_FILE"
+  echo "Создан случайный пароль Grafana: $GRAFANA_PASSWORD_FILE" >&2
+fi
+
 exec docker compose \
   --file "$ROOT/docker-compose.yml" \
   --env-file "$ROOT/.env" \

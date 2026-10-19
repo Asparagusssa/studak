@@ -25,11 +25,15 @@ func SetLike(db *gorm.DB, fromUserID, toUserID uint, isLike bool) (*LikeResult, 
 
 	var result LikeResult
 	err := db.Transaction(func(tx *gorm.DB) error {
-		var count int64
-		if err := tx.Model(&models.User{}).Where("id IN ?", []uint{fromUserID, toUserID}).Count(&count).Error; err != nil {
+		// Lock both users in a stable order. Opposite likes for the same pair are
+		// then serialized, so both rows cannot miss each other and remain falsely
+		// non-mutual under concurrent requests.
+		var users []models.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id").Where("id IN ?", []uint{fromUserID, toUserID}).Order("id").Find(&users).Error; err != nil {
 			return err
 		}
-		if count != 2 {
+		if len(users) != 2 {
 			return ErrNotFound
 		}
 

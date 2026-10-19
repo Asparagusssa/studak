@@ -1,6 +1,7 @@
 package maxbot
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -11,13 +12,16 @@ import (
 	"strings"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"studak/internal/crud"
+	"studak/internal/logx"
 	"studak/internal/models"
 )
 
 const (
-	channelMax = "max"
+	channelMax        = "max"
+	maxWebhookUpdates = 10
 
 	stepStart      = "start"
 	stepName       = "name"
@@ -32,10 +36,13 @@ const (
 	stepMenu       = "menu"
 )
 
+var errInvalidUpdate = errors.New("invalid MAX update")
+
 type Bot struct {
 	DB     *gorm.DB
 	Client *Client
 	Secret string
+	ctx    context.Context
 }
 
 func New(db *gorm.DB, token, secret string) *Bot {
@@ -59,8 +66,16 @@ func (b *Bot) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	if err := b.HandleBody(raw); err != nil {
-		log.Printf("max webhook: %v", err)
+	requestBot := *b
+	requestBot.ctx = r.Context()
+	requestBot.DB = b.DB.WithContext(r.Context())
+	if err := requestBot.HandleBody(raw); err != nil {
+		if errors.Is(err, errInvalidUpdate) {
+			log.Printf("max webhook: invalid update: %v", err)
+			http.Error(w, "invalid update", http.StatusBadRequest)
+			return
+		}
+		logx.Error("MAX webhook processing failed", err)
 		http.Error(w, "update failed", http.StatusInternalServerError)
 		return
 	}
@@ -70,7 +85,10 @@ func (b *Bot) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (b *Bot) HandleBody(raw []byte) error {
 	updates := ParseUpdates(raw)
 	if len(updates) == 0 {
-		return fmt.Errorf("empty or invalid update")
+		return fmt.Errorf("%w: empty or malformed body", errInvalidUpdate)
+	}
+	if len(updates) > maxWebhookUpdates {
+		return fmt.Errorf("%w: batch contains %d updates, maximum is %d", errInvalidUpdate, len(updates), maxWebhookUpdates)
 	}
 	var first error
 	for _, u := range updates {
@@ -85,25 +103,40 @@ func (b *Bot) HandleUpdate(u Update) error {
 	switch u.UpdateType {
 	case "bot_started":
 		if u.User == nil {
-			return fmt.Errorf("bot_started without user")
+			return fmt.Errorf("%w: bot_started without user", errInvalidUpdate)
 		}
-		return b.onStart(u.User.MaxID(), u.User.DisplayName())
+		maxID, err := u.User.MaxID()
+		if err != nil {
+			return fmt.Errorf("%w: %v", errInvalidUpdate, err)
+		}
+		return b.onStart(maxID, u.User.DisplayName())
 	case "message_created":
-		if u.Message == nil || u.Message.Sender.IsBot {
+		if u.Message == nil {
+			return fmt.Errorf("%w: message_created without message", errInvalidUpdate)
+		}
+		if u.Message.Sender.IsBot {
 			return nil
 		}
 		if u.Message.Recipient.ChatType != "" && u.Message.Recipient.ChatType != "dialog" {
 			return nil
 		}
-		return b.onText(u.Message.Sender.MaxID(), u.Message.Body.Text)
+		maxID, err := u.Message.Sender.MaxID()
+		if err != nil {
+			return fmt.Errorf("%w: %v", errInvalidUpdate, err)
+		}
+		return b.onText(maxID, u.Message.Body.Text)
 	case "message_callback":
 		if u.Callback == nil {
-			return fmt.Errorf("message_callback without callback")
+			return fmt.Errorf("%w: message_callback without callback", errInvalidUpdate)
 		}
-		if err := b.Client.AnswerCallback(u.Callback.CallbackID, ""); err != nil {
-			log.Printf("max callback answer: %v", err)
+		maxID, err := u.Callback.User.MaxID()
+		if err != nil {
+			return fmt.Errorf("%w: %v", errInvalidUpdate, err)
 		}
-		return b.onCallback(u.Callback.User.MaxID(), u.Callback.Payload)
+		if err := b.Client.AnswerCallbackContext(b.context(), u.Callback.CallbackID, ""); err != nil {
+			logx.Error("MAX callback answer failed", err)
+		}
+		return b.onCallback(maxID, u.Callback.Payload)
 	default:
 		return nil
 	}
@@ -283,7 +316,11 @@ func (b *Bot) onCallback(maxID int64, payload string) error {
 		if err != nil {
 			return nil
 		}
-		s.DraftPreferred = appendID(s.DraftPreferred, uint(id))
+		var added bool
+		s.DraftPreferred, added = appendID(s.DraftPreferred, uint(id))
+		if !added {
+			return b.send(maxID, fmt.Sprintf("Можно выбрать не больше %d вузов.", crud.MaxPreferredUniversities), [][]Button{{CallbackButton("Готово", "pref_done:")}})
+		}
 		s.Step = stepPreferred
 		if err := b.DB.Save(s).Error; err != nil {
 			return err
@@ -375,8 +412,8 @@ func (b *Bot) offerUniversities(s *models.BotSession, query string) error {
 func (b *Bot) finishOnboarding(s *models.BotSession) error {
 	user, err := b.saveProfile(s)
 	if err != nil {
-		log.Printf("max save profile: %v", err)
-		return b.send(s.ExternalID, "Не получилось сохранить анкету: "+err.Error(), nil)
+		logx.Error("MAX profile save failed", err)
+		return b.send(s.ExternalID, "Не получилось сохранить анкету. Попробуй ещё раз позже.", nil)
 	}
 	id := user.ID
 	s.UserID = &id
@@ -552,15 +589,25 @@ func (b *Bot) appUser(s *models.BotSession) (*models.User, error) {
 }
 
 func (b *Bot) session(maxID int64) (*models.BotSession, error) {
+	if maxID <= 0 {
+		return nil, fmt.Errorf("invalid MAX user_id")
+	}
 	var s models.BotSession
 	err := b.DB.Where("channel = ? AND external_id = ?", channelMax, maxID).First(&s).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		s = models.BotSession{Channel: channelMax, ExternalID: maxID, Step: stepStart}
-		if err := b.DB.Create(&s).Error; err != nil {
-			return nil, err
-		}
+	if err == nil {
 		return &s, nil
 	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	seed := models.BotSession{Channel: channelMax, ExternalID: maxID, Step: stepStart}
+	if err := b.DB.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "channel"}, {Name: "external_id"}},
+		DoNothing: true,
+	}).Create(&seed).Error; err != nil {
+		return nil, err
+	}
+	err = b.DB.Where("channel = ? AND external_id = ?", channelMax, maxID).First(&s).Error
 	if err != nil {
 		return nil, err
 	}
@@ -568,11 +615,18 @@ func (b *Bot) session(maxID int64) (*models.BotSession, error) {
 }
 
 func (b *Bot) send(userID int64, text string, keyboard [][]Button) error {
-	if err := b.Client.Send(userID, text, keyboard); err != nil {
-		log.Printf("max send to %d: %v", userID, err)
+	if err := b.Client.SendContext(b.context(), userID, text, keyboard); err != nil {
+		logx.Error(fmt.Sprintf("MAX send to user %d failed", userID), err)
 		return err
 	}
 	return nil
+}
+
+func (b *Bot) context() context.Context {
+	if b != nil && b.ctx != nil {
+		return b.ctx
+	}
+	return context.Background()
 }
 
 func menuKeyboard() [][]Button {
@@ -635,8 +689,16 @@ func parseIDs(s string) []uint {
 	return out
 }
 
-func appendID(s string, id uint) string {
+func appendID(s string, id uint) (string, bool) {
 	ids := parseIDs(s)
+	for _, existing := range ids {
+		if existing == id {
+			return s, true
+		}
+	}
+	if len(ids) >= crud.MaxPreferredUniversities {
+		return s, false
+	}
 	ids = append(ids, id)
 	parts := make([]string, 0, len(ids))
 	seen := map[uint]struct{}{}
@@ -647,5 +709,5 @@ func appendID(s string, id uint) string {
 		seen[x] = struct{}{}
 		parts = append(parts, strconv.FormatUint(uint64(x), 10))
 	}
-	return strings.Join(parts, ",")
+	return strings.Join(parts, ","), true
 }

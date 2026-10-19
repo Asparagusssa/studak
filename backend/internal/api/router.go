@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -11,10 +13,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
 	"gorm.io/gorm"
 
 	"studak/internal/bots/maxbot"
 	"studak/internal/crud"
+	"studak/internal/logx"
 )
 
 type Handler struct {
@@ -29,11 +33,37 @@ type Config struct {
 	Max            *maxbot.Bot
 }
 
+var (
+	httpRequests = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "studak",
+		Subsystem: "http",
+		Name:      "requests_total",
+		Help:      "Total number of HTTP requests handled by the API.",
+	}, []string{"method", "route", "status"})
+	httpDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "studak",
+		Subsystem: "http",
+		Name:      "request_duration_seconds",
+		Help:      "HTTP request duration in seconds.",
+		Buckets:   prometheus.DefBuckets,
+	}, []string{"method", "route"})
+	httpInFlight = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "studak",
+		Subsystem: "http",
+		Name:      "in_flight_requests",
+		Help:      "Current number of HTTP requests being handled.",
+	})
+)
+
+func init() {
+	prometheus.MustRegister(httpRequests, httpDuration, httpInFlight)
+}
+
 func NewRouter(db *gorm.DB, cfg Config) *gin.Engine {
 	h := &Handler{DB: db, Max: cfg.Max}
 
 	r := gin.New()
-	r.Use(gin.Logger(), gin.Recovery(), cors(cfg.AllowedOrigins))
+	r.Use(gin.Logger(), httpMetrics(), gin.Recovery(), requestTimeout(25*time.Second), securityHeaders(), cors(cfg.AllowedOrigins))
 	_ = r.SetTrustedProxies(nil)
 
 	r.GET("/health", h.health)
@@ -57,6 +87,23 @@ func NewRouter(db *gorm.DB, cfg Config) *gin.Engine {
 	return r
 }
 
+func httpMetrics() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		started := time.Now()
+		httpInFlight.Inc()
+		defer httpInFlight.Dec()
+
+		c.Next()
+
+		route := c.FullPath()
+		if route == "" {
+			route = "unmatched"
+		}
+		httpRequests.WithLabelValues(c.Request.Method, route, strconv.Itoa(c.Writer.Status())).Inc()
+		httpDuration.WithLabelValues(c.Request.Method, route).Observe(time.Since(started).Seconds())
+	}
+}
+
 func (h *Handler) health(c *gin.Context) {
 	sqlDB, err := h.DB.DB()
 	if err != nil {
@@ -74,11 +121,11 @@ func (h *Handler) health(c *gin.Context) {
 
 func (h *Handler) createUser(c *gin.Context) {
 	var in crud.CreateUserInput
-	if err := c.ShouldBindJSON(&in); err != nil {
-		respondError(c, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+	if err := decodeJSON(c, &in); err != nil {
+		respondError(c, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	user, err := crud.CreateUser(h.DB, in)
+	user, err := crud.CreateUser(h.DB.WithContext(c.Request.Context()), in)
 	if err != nil {
 		handleErr(c, err)
 		return
@@ -91,7 +138,7 @@ func (h *Handler) getUser(c *gin.Context) {
 	if !ok {
 		return
 	}
-	user, err := crud.GetUser(h.DB, id)
+	user, err := crud.GetUser(h.DB.WithContext(c.Request.Context()), id)
 	if err != nil {
 		handleErr(c, err)
 		return
@@ -105,11 +152,11 @@ func (h *Handler) updateUser(c *gin.Context) {
 		return
 	}
 	var in crud.UpdateUserInput
-	if err := c.ShouldBindJSON(&in); err != nil {
-		respondError(c, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+	if err := decodeJSON(c, &in); err != nil {
+		respondError(c, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	user, err := crud.UpdateUser(h.DB, id, in)
+	user, err := crud.UpdateUser(h.DB.WithContext(c.Request.Context()), id, in)
 	if err != nil {
 		handleErr(c, err)
 		return
@@ -125,12 +172,12 @@ type likeRequest struct {
 
 func (h *Handler) setLike(c *gin.Context) {
 	var req likeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := decodeJSON(c, &req); err != nil || req.FromUserID == 0 || req.ToUserID == 0 {
 		respondError(c, http.StatusBadRequest, "from_user_id and to_user_id are required")
 		return
 	}
 	isLike := req.IsLike == nil || *req.IsLike
-	res, err := crud.SetLike(h.DB, req.FromUserID, req.ToUserID, isLike)
+	res, err := crud.SetLike(h.DB.WithContext(c.Request.Context()), req.FromUserID, req.ToUserID, isLike)
 	if err != nil {
 		handleErr(c, err)
 		return
@@ -138,12 +185,24 @@ func (h *Handler) setLike(c *gin.Context) {
 	c.JSON(http.StatusOK, res)
 }
 
+func decodeJSON(c *gin.Context, dst any) error {
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("request body must contain a single JSON value")
+	}
+	return nil
+}
+
 func (h *Handler) nextProfile(c *gin.Context) {
 	id, ok := parseID(c, "userId")
 	if !ok {
 		return
 	}
-	profile, err := crud.GetNextProfile(h.DB, id)
+	profile, err := crud.GetNextProfile(h.DB.WithContext(c.Request.Context()), id)
 	if err != nil {
 		handleErr(c, err)
 		return
@@ -152,7 +211,7 @@ func (h *Handler) nextProfile(c *gin.Context) {
 }
 
 func (h *Handler) searchUniversities(c *gin.Context) {
-	unis, err := crud.SearchUniversities(h.DB, c.Query("q"))
+	unis, err := crud.SearchUniversities(h.DB.WithContext(c.Request.Context()), c.Query("q"))
 	if err != nil {
 		handleErr(c, err)
 		return
@@ -198,7 +257,11 @@ func handleErr(c *gin.Context, err error) {
 	case errors.Is(err, crud.ErrAlreadyExists):
 		respondError(c, http.StatusConflict, "user with this telegram_id, max_id or web_uuid already exists")
 	default:
-		log.Printf("internal error: %v", err)
+		route := c.FullPath()
+		if route == "" {
+			route = c.Request.URL.Path
+		}
+		logx.Error(c.Request.Method+" "+route+" failed", err)
 		respondError(c, http.StatusInternalServerError, "internal server error")
 	}
 }
@@ -230,6 +293,26 @@ func cors(allowed []string) gin.HandlerFunc {
 			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}
+		c.Next()
+	}
+}
+
+func securityHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		c.Header("Referrer-Policy", "no-referrer")
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Next()
+	}
+}
+
+func requestTimeout(timeout time.Duration) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
+		defer cancel()
+		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	}
 }

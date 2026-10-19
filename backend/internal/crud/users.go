@@ -2,6 +2,7 @@ package crud
 
 import (
 	"errors"
+	"net/url"
 	"strings"
 
 	"github.com/google/uuid"
@@ -11,8 +12,9 @@ import (
 )
 
 const (
-	MinAge = 16
-	MaxAge = 100
+	MinAge                   = 16
+	MaxAge                   = 100
+	MaxPreferredUniversities = 10
 )
 
 type CreateUserInput struct {
@@ -53,10 +55,16 @@ func CreateUser(db *gorm.DB, in CreateUserInput) (*models.User, error) {
 		Bio:            strings.TrimSpace(in.Bio),
 		PhotoURL:       strings.TrimSpace(in.PhotoURL),
 		MyUniversityID: in.MyUniversityID,
-		SearchMode:     in.SearchMode,
+		SearchMode:     strings.TrimSpace(in.SearchMode),
 	}
 	if user.WebUUID == "" {
 		user.WebUUID = uuid.NewString()
+	} else {
+		parsed, err := uuid.Parse(user.WebUUID)
+		if err != nil {
+			return nil, invalid("web_uuid must be a valid UUID")
+		}
+		user.WebUUID = parsed.String()
 	}
 	if user.SearchMode == "" {
 		user.SearchMode = models.SearchModeAll
@@ -121,7 +129,7 @@ func UpdateUser(db *gorm.DB, id uint, in UpdateUserInput) (*models.User, error) 
 			user.MyUniversityID = in.MyUniversityID
 		}
 		if in.SearchMode != nil {
-			user.SearchMode = *in.SearchMode
+			user.SearchMode = strings.TrimSpace(*in.SearchMode)
 		}
 		if err := validateUser(&user); err != nil {
 			return err
@@ -183,6 +191,12 @@ func GetUserByMaxID(db *gorm.DB, maxID int64) (*models.User, error) {
 }
 
 func validateUser(u *models.User) error {
+	if u.TelegramID != nil && *u.TelegramID <= 0 {
+		return invalid("telegram_id must be a positive integer")
+	}
+	if u.MaxID != nil && *u.MaxID <= 0 {
+		return invalid("max_id must be a positive integer")
+	}
 	if u.Name == "" {
 		return invalid("name is required")
 	}
@@ -194,6 +208,24 @@ func validateUser(u *models.User) error {
 	}
 	if len([]rune(u.Bio)) > 1000 {
 		return invalid("bio is too long")
+	}
+	if len([]rune(u.Gender)) > 16 {
+		return invalid("gender is too long")
+	}
+	if u.Gender != "" && u.Gender != "male" && u.Gender != "female" && u.Gender != "other" {
+		return invalid("gender must be one of: male, female, other")
+	}
+	if len([]rune(u.PhotoURL)) > 512 {
+		return invalid("photo_url is too long")
+	}
+	if u.PhotoURL != "" {
+		parsed, err := url.ParseRequestURI(u.PhotoURL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return invalid("photo_url must be an absolute HTTP or HTTPS URL")
+		}
+	}
+	if u.MyUniversityID != nil && *u.MyUniversityID == 0 {
+		return invalid("my_university_id must be a positive integer")
 	}
 	if !models.IsValidSearchMode(u.SearchMode) {
 		return invalid("search_mode must be one of: my_only, selected, all")
@@ -222,9 +254,15 @@ func loadUniversities(tx *gorm.DB, ids []uint) ([]models.University, error) {
 	unique := make([]uint, 0, len(ids))
 	seen := make(map[uint]struct{}, len(ids))
 	for _, id := range ids {
+		if id == 0 {
+			return nil, invalid("preferred_university_ids must contain positive integers")
+		}
 		if _, ok := seen[id]; !ok {
 			seen[id] = struct{}{}
 			unique = append(unique, id)
+			if len(unique) > MaxPreferredUniversities {
+				return nil, invalid("preferred_university_ids may contain at most %d universities", MaxPreferredUniversities)
+			}
 		}
 	}
 	if len(unique) == 0 {

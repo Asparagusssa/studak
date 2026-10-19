@@ -23,7 +23,8 @@ import (
 func TestParseUpdates(t *testing.T) {
 	single := []byte(`{"update_type":"message_created","message":{"sender":{"user_id":9},"body":{"text":"привет"}}}`)
 	got := ParseUpdates(single)
-	if len(got) != 1 || got[0].Message.Body.Text != "привет" || got[0].Message.Sender.MaxID() != 9 {
+	maxID, err := got[0].Message.Sender.MaxID()
+	if err != nil || len(got) != 1 || got[0].Message.Body.Text != "привет" || maxID != 9 {
 		t.Fatalf("single: %+v", got)
 	}
 
@@ -35,6 +36,25 @@ func TestParseUpdates(t *testing.T) {
 	wrap := ParseUpdates([]byte(`{"updates":[{"update_type":"message_callback","callback":{"payload":"like:3","user":{"user_id":2}}}]}`))
 	if len(wrap) != 1 || wrap[0].Callback.Payload != "like:3" {
 		t.Fatalf("wrap: %+v", wrap)
+	}
+}
+
+func TestRejectsMissingMaxUserID(t *testing.T) {
+	db, err := testDB(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bot := New(db, "test-token", "secret")
+	err = bot.HandleUpdate(Update{UpdateType: "bot_started", User: &User{Name: "Без ID"}})
+	if err == nil || !strings.Contains(err.Error(), "user_id") {
+		t.Fatalf("expected missing user_id error, got %v", err)
+	}
+	var count int64
+	if err := db.Model(&models.BotSession{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("invalid update created %d sessions", count)
 	}
 }
 
@@ -194,8 +214,8 @@ func TestWebhookSecretAndHTTP200(t *testing.T) {
 	req.Header.Set("X-Max-Bot-Api-Secret", "sekret")
 	rec = httptest.NewRecorder()
 	bot.ServeHTTP(rec, req)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("invalid json should be retried, got %d", rec.Code)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid json should be rejected, got %d", rec.Code)
 	}
 }
 

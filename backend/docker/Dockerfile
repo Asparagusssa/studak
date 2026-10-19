@@ -32,7 +32,7 @@ WORKDIR /app
 COPY --from=build --chown=app:app /out/server /app/server
 
 USER app
-EXPOSE 8080
+EXPOSE 8080 9091
 ENV GIN_MODE=release
 
 ENTRYPOINT ["/app/server"]

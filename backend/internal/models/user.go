@@ -4,8 +4,8 @@ import "time"
 
 type User struct {
 	ID         uint   `gorm:"primaryKey" json:"id"`
-	TelegramID *int64 `gorm:"uniqueIndex" json:"-"`
-	MaxID      *int64 `gorm:"uniqueIndex" json:"-"`
+	TelegramID *int64 `gorm:"uniqueIndex;check:chk_users_telegram_id_positive,telegram_id IS NULL OR telegram_id > 0" json:"-"`
+	MaxID      *int64 `gorm:"uniqueIndex;check:chk_users_max_id_positive,max_id IS NULL OR max_id > 0" json:"-"`
 	WebUUID    string `gorm:"size:36;uniqueIndex;not null" json:"-"`
 
 	Name     string `gorm:"size:100;not null" json:"name"`

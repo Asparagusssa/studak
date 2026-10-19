@@ -27,6 +27,9 @@ PostgreSQL не публикуется на хост и доступен тол�
 по умолчанию слушает только `127.0.0.1:8080`; наружу его следует выпускать через
 HTTPS reverse proxy или Ngrok.
 
+Скрипт `./start.sh -d` при первом запуске автоматически создаёт файл
+`.grafana-admin-password` с правами `0600`. Он исключён из Git.
+
 Остановка без удаления данных:
 
 ```bash
@@ -48,18 +51,28 @@ docker compose down -v
 
 Опциональные интеграции:
 
-- `TG_BOT_TOKEN` — токен Telegram; обработчик Telegram пока является заглушкой.
+- `TG_BOT_TOKEN` — токен Telegram формата `<числовой-id>:<секрет>`; обработчик
+  Telegram пока является заглушкой.
 - `TG_WEBHOOK_SECRET` — обязателен при заданном `TG_BOT_TOKEN`, 16–256 безопасных символов.
 - `MAX_BOT_TOKEN` — токен MAX.
 - `MAX_WEBHOOK_SECRET` — обязателен при заданном `MAX_BOT_TOKEN`, минимум 16 символов.
 - `WEBHOOK_BASE_URL` — публичный HTTPS URL без завершающего `/`.
 - `CORS_ORIGINS` — разрешённые origins через запятую. Пустое значение запрещает
   cross-origin запросы; `*` запрещён в production.
+- `GRAFANA_ADMIN_USER` — логин Grafana, по умолчанию `admin`.
+- `GRAFANA_PORT` — локальный порт Grafana, по умолчанию `3000`.
+- `PROMETHEUS_PORT` — локальный порт Prometheus, по умолчанию `9090`.
 
 Для внешней managed-базы можно передать `DATABASE_URL`. Если она не задана,
 приложение собирает подключение из `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`,
 `DB_PASSWORD` и `DB_SSLMODE`. Для внешней базы оставляйте `sslmode=require` или
 строже; `disable` используется только во внутренней Docker-сети.
+
+MAX использует TLS-цепочку `Russian Trusted Root CA`, отсутствующую в стандартном
+Alpine CA bundle. Проверенный корневой сертификат встроен только в HTTP-клиент
+фиксированного MAX API и не добавляется в системное хранилище или Telegram-клиент.
+Его SHA-256 fingerprint фиксируется unit-тестом; источник сертификата — портал
+Госуслуг `https://www.gosuslugi.ru/crt`.
 
 ## REST API
 
@@ -153,6 +166,8 @@ GOOSE_MIGRATION_DIR=./migrations goose create add_profile_fields sql
 go test ./...
 go test -race ./...
 go vet ./...
+go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+go run github.com/securego/gosec/v2/cmd/gosec@latest -quiet ./...
 docker compose config
 ```
 
@@ -161,6 +176,53 @@ production-бинарник подключает исключительно Post
 дополнительно прогонять в CI на чистом экземпляре PostgreSQL.
 
 ## Эксплуатация
+
+### Логи и метрики в Grafana
+
+После запуска откройте `http://127.0.0.1:3000`. Логин по умолчанию — `admin`,
+пароль можно вывести локально:
+
+```bash
+cat .grafana-admin-password
+```
+
+Готовый dashboard находится в разделе **Dashboards → Studak → Студак — логи и
+метрики**. В нём доступны:
+
+- логи всех контейнеров проекта с фильтром по сервису;
+- частота и HTTP-статусы запросов;
+- задержка p95, количество goroutine, память и доступность backend.
+
+Prometheus доступен локально на `http://127.0.0.1:9090`. Точка `/metrics`
+backend работает на отдельном порту `9091` только внутри Docker-сети и на хост
+не публикуется. Loki также не публикуется и доступен только Grafana и Alloy.
+Prometheus хранит метрики 15 дней, Loki — логи 7 дней. Docker JSON-логи
+ротируются: не более трёх файлов по 10 МБ на контейнер.
+
+Быстрая проверка стека:
+
+```bash
+docker compose ps
+docker compose logs --tail=100 alloy loki prometheus grafana
+curl http://127.0.0.1:9090/-/ready
+```
+
+Alloy читает Docker API через read-only mount `/var/run/docker.sock` и собирает
+только контейнеры с label проекта `studak`. Сам Docker socket даёт контейнеру
+широкий доступ к Docker Engine даже при read-only mount, поэтому не добавляйте в
+образ Alloy сторонние плагины и используйте только зафиксированную официальную
+версию образа.
+
+Смотреть runtime-логи:
+
+```bash
+docker compose logs -f backend
+```
+
+Внутренние ошибки выводятся с префиксом `ERROR`, описанием операции и
+`stacktrace`. Ожидаемые ошибки входных данных (`400`) логируются без stack trace,
+чтобы внешние запросы не могли бесконтрольно раздувать логи. Токен Telegram
+редактируется из текста сетевых ошибок.
 
 - Делайте регулярный `pg_dump` и проверяйте восстановление резервной копии.
 - Не коммитьте `.env`, дампы БД или логи.

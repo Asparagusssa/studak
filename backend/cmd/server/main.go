@@ -1,13 +1,15 @@
 package main
 
 import (
-	"log"
+	"os"
 
 	"studak/internal/app"
+	"studak/internal/logx"
 )
 
 func main() {
 	if err := app.Run(); err != nil {
-		log.Fatal(err)
+		logx.Error("application stopped", err)
+		os.Exit(1)
 	}
 }

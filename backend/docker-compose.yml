@@ -1,5 +1,11 @@
 name: studak
 
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -20,6 +26,7 @@ services:
     shm_size: 128mb
     security_opt:
       - no-new-privileges:true
+    logging: *default-logging
     networks:
       - backend
 
@@ -52,6 +59,7 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    logging: *default-logging
     networks:
       - backend
 
@@ -72,6 +80,8 @@ services:
       APP_ENV: production
       GIN_MODE: release
       PORT: "8080"
+      METRICS_HOST: "0.0.0.0"
+      METRICS_PORT: "9091"
       DB_HOST: postgres
       DB_PORT: "5432"
       DB_NAME: ${POSTGRES_DB:-dating}
@@ -91,6 +101,8 @@ services:
       WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL:-}
     ports:
       - "127.0.0.1:${PORT:-8080}:8080"
+    expose:
+      - "9091"
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -98,6 +110,7 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
       interval: 10s
@@ -107,9 +120,136 @@ services:
     networks:
       - backend
 
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    networks:
+      - backend
+      - observability
+
+  loki:
+    image: grafana/loki:3.7.8
+    restart: unless-stopped
+    command:
+      - -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./observability/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    expose:
+      - "3100"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    networks:
+      - observability
+
+  alloy:
+    image: grafana/alloy:v1.20.1
+    restart: unless-stopped
+    user: "473:473"
+    group_add:
+      - "0"
+    command:
+      - run
+      - --server.http.listen-addr=127.0.0.1:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    depends_on:
+      loki:
+        condition: service_started
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy_data:/var/lib/alloy
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    networks:
+      - observability
+
+  grafana:
+    image: grafana/grafana:13.2.2
+    restart: unless-stopped
+    depends_on:
+      prometheus:
+        condition: service_started
+      loki:
+        condition: service_started
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_SERVER_DOMAIN: localhost
+    secrets:
+      - grafana_admin_password
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./observability/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /var/log/grafana:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    networks:
+      - observability
+      - ui
+
 volumes:
   postgres_data:
+  prometheus_data:
+  loki_data:
+  alloy_data:
+  grafana_data:
 
 networks:
   backend:
     driver: bridge
+  observability:
+    driver: bridge
+    internal: true
+  ui:
+    driver: bridge
+
+secrets:
+  grafana_admin_password:
+    file: .grafana-admin-password

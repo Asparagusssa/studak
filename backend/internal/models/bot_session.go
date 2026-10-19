@@ -6,7 +6,7 @@ import "time"
 type BotSession struct {
 	ID         uint   `gorm:"primaryKey" json:"id"`
 	Channel    string `gorm:"size:16;uniqueIndex:idx_bot_sess,priority:1;not null" json:"channel"`
-	ExternalID int64  `gorm:"uniqueIndex:idx_bot_sess,priority:2;not null" json:"external_id"`
+	ExternalID int64  `gorm:"uniqueIndex:idx_bot_sess,priority:2;not null;check:chk_bot_sessions_external_id_positive,external_id > 0" json:"external_id"`
 	UserID     *uint  `gorm:"index" json:"user_id,omitempty"`
 	Step       string `gorm:"size:32;not null" json:"step"`
 

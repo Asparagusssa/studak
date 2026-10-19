@@ -55,7 +55,7 @@ func TestRegisterWebhooksTelegramAndMax(t *testing.T) {
 	telegramAPI, maxAPI = tg.URL, maxMessenger.URL
 	t.Cleanup(func() { telegramAPI, maxAPI = oldTg, oldMax })
 
-	t.Setenv("TG_BOT_TOKEN", "tg-token")
+	t.Setenv("TG_BOT_TOKEN", "123456:test-token")
 	t.Setenv("TG_WEBHOOK_SECRET", "telegram-secret-123")
 	t.Setenv("MAX_BOT_TOKEN", "max-token")
 
@@ -75,9 +75,38 @@ func TestRegisterWebhooksTelegramAndMax(t *testing.T) {
 	}
 }
 
+func TestValidTelegramToken(t *testing.T) {
+	if !ValidTelegramToken("123456:AbCd_ef-123") {
+		t.Fatal("valid token rejected")
+	}
+	for _, token := range []string{"", "tg-token", "abc:secret", "123:bad/segment", "123:bad?query", "123:bad secret"} {
+		if ValidTelegramToken(token) {
+			t.Errorf("invalid token accepted: %q", token)
+		}
+	}
+}
+
 func TestRegisterWebhooksSkipsEmpty(t *testing.T) {
 	_ = os.Unsetenv("TG_BOT_TOKEN")
 	_ = os.Unsetenv("MAX_BOT_TOKEN")
 	RegisterWebhooks("")
 	RegisterWebhooks("http://insecure.example")
+}
+
+func TestNormalizeWebhookBaseURL(t *testing.T) {
+	good, err := normalizeWebhookBaseURL(" https://example.test/hooks/ ")
+	if err != nil || good != "https://example.test/hooks" {
+		t.Fatalf("valid URL: got %q, err=%v", good, err)
+	}
+	for _, raw := range []string{
+		"http://example.test",
+		"https://user:pass@example.test",
+		"https://example.test?token=secret",
+		"https://example.test/#fragment",
+		"not a url",
+	} {
+		if _, err := normalizeWebhookBaseURL(raw); err == nil {
+			t.Errorf("expected %q to be rejected", raw)
+		}
+	}
 }

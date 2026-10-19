@@ -2,6 +2,7 @@ package maxbot
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,13 +36,20 @@ func NewClient(token string) *Client {
 	return &Client{
 		Token:   strings.TrimSpace(token),
 		BaseURL: defaultAPI,
-		HTTP:    &http.Client{Timeout: 20 * time.Second},
+		HTTP:    NewHTTPClient(20 * time.Second),
 	}
 }
 
 func (c *Client) Send(userID int64, text string, keyboard [][]Button) error {
+	return c.SendContext(context.Background(), userID, text, keyboard)
+}
+
+func (c *Client) SendContext(ctx context.Context, userID int64, text string, keyboard [][]Button) error {
 	if c == nil || c.Token == "" {
 		return fmt.Errorf("max token is empty")
+	}
+	if userID <= 0 {
+		return fmt.Errorf("invalid MAX user_id")
 	}
 	body := map[string]any{"text": text}
 	if len(keyboard) > 0 {
@@ -59,7 +67,7 @@ func (c *Client) Send(userID int64, text string, keyboard [][]Button) error {
 		return err
 	}
 	endpoint := c.base() + "/messages?user_id=" + strconv.FormatInt(userID, 10)
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
 		return err
 	}
@@ -69,6 +77,10 @@ func (c *Client) Send(userID int64, text string, keyboard [][]Button) error {
 }
 
 func (c *Client) AnswerCallback(callbackID, notification string) error {
+	return c.AnswerCallbackContext(context.Background(), callbackID, notification)
+}
+
+func (c *Client) AnswerCallbackContext(ctx context.Context, callbackID, notification string) error {
 	if c == nil || c.Token == "" || strings.TrimSpace(callbackID) == "" {
 		return nil
 	}
@@ -78,7 +90,7 @@ func (c *Client) AnswerCallback(callbackID, notification string) error {
 	}
 	raw, _ := json.Marshal(payload)
 	endpoint := c.base() + "/answers?callback_id=" + url.QueryEscape(callbackID)
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
 		return err
 	}

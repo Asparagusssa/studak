@@ -55,10 +55,27 @@ func TestProtectedAPIAndPrivateFields(t *testing.T) {
 		}
 	}
 
+	for _, invalid := range []string{
+		`{"name":"Борис","age":20,"unknown":true}`,
+		`{"max_id":0,"name":"Борис","age":20}`,
+		`{"name":"Борис","age":20} {"name":"Ева","age":21}`,
+	} {
+		req = httptest.NewRequest(http.MethodPost, "/users", bytes.NewBufferString(invalid))
+		req.Header.Set("Authorization", "Bearer test-api-token-with-at-least-32-characters")
+		rec = httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("invalid input %s: got %d body=%s", invalid, rec.Code, rec.Body.String())
+		}
+	}
+
 	req = httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("health: got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("security headers: X-Content-Type-Options=%q", got)
 	}
 }

@@ -1,15 +1,19 @@
 package crud
 
 import (
+	"crypto/rand"
+	"math/big"
 	"strings"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 
 	"studak/internal/models"
 )
 
-// GetNextProfile returns a random candidate for the user's feed, honoring their
-// SearchMode and skipping themselves and anyone they already liked/disliked.
+// GetNextProfile returns a candidate starting from a random ID pivot. Unlike
+// ORDER BY RANDOM(), this lets PostgreSQL use the primary-key index as the user
+// table grows.
 func GetNextProfile(db *gorm.DB, userID uint) (*models.User, error) {
 	var me models.User
 	if err := db.First(&me, userID).Error; err != nil {
@@ -38,23 +42,59 @@ func GetNextProfile(db *gorm.DB, userID uint) (*models.User, error) {
 		return nil, invalid("unknown search_mode %q", me.SearchMode)
 	}
 
-	var candidate models.User
-	err := q.Preload("MyUniversity").Order("RANDOM()").Limit(1).Take(&candidate).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, ErrNoProfiles
-		}
+	var maxID uint
+	if err := db.Model(&models.User{}).Select("COALESCE(MAX(id), 0)").Scan(&maxID).Error; err != nil {
 		return nil, err
 	}
-	return &candidate, nil
+	if maxID == 0 {
+		return nil, ErrNoProfiles
+	}
+	pivot, err := randomPivot(maxID)
+	if err != nil {
+		return nil, err
+	}
+
+	find := func(query *gorm.DB) (*models.User, error) {
+		var candidate models.User
+		err := query.Preload("MyUniversity").Order("users.id").Take(&candidate).Error
+		if err != nil {
+			return nil, err
+		}
+		return &candidate, nil
+	}
+	if candidate, err := find(q.Where("users.id >= ?", pivot)); err == nil {
+		return candidate, nil
+	} else if err != gorm.ErrRecordNotFound {
+		return nil, err
+	}
+	if candidate, err := find(q.Where("users.id < ?", pivot)); err == nil {
+		return candidate, nil
+	} else if err != gorm.ErrRecordNotFound {
+		return nil, err
+	}
+	return nil, ErrNoProfiles
 }
 
-const universitySearchLimit = 10
+func randomPivot(maxID uint) (uint, error) {
+	n, err := rand.Int(rand.Reader, new(big.Int).SetUint64(uint64(maxID)))
+	if err != nil {
+		return 0, err
+	}
+	return uint(n.Uint64()) + 1, nil
+}
+
+const (
+	universitySearchLimit    = 10
+	MaxUniversitySearchRunes = 100
+)
 
 // SearchUniversities does a case-insensitive substring match on full and short
 // names (Cyrillic included). Prefix matches are ranked first.
 func SearchUniversities(db *gorm.DB, query string) ([]models.University, error) {
 	query = strings.ToLower(strings.TrimSpace(query))
+	if utf8.RuneCountInString(query) > MaxUniversitySearchRunes {
+		return nil, invalid("university search query is too long")
+	}
 	unis := []models.University{}
 
 	q := db.Model(&models.University{})

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gorm.io/gorm/logger"
 
 	"studak/internal/api"
@@ -26,6 +27,8 @@ import (
 
 type config struct {
 	Port           string
+	MetricsHost    string
+	MetricsPort    string
 	Database       database.Config
 	AllowedOrigins []string
 	APIToken       string
@@ -74,6 +77,12 @@ func Run() error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
+	metricsAddr := net.JoinHostPort(cfg.MetricsHost, cfg.MetricsPort)
+	metricsLn, err := net.Listen("tcp", metricsAddr)
+	if err != nil {
+		_ = ln.Close()
+		return fmt.Errorf("listen metrics %s: %w", metricsAddr, err)
+	}
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -84,16 +93,37 @@ func Run() error {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsSrv := &http.Server{
+		Addr:              metricsAddr,
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 3 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		MaxHeaderBytes:    1 << 18,
+	}
 
-	serveErr := make(chan error, 1)
+	type serverError struct {
+		name string
+		err  error
+	}
+	serveErr := make(chan serverError, 2)
 	go func() {
 		err := srv.Serve(ln)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serveErr <- err
+			serveErr <- serverError{name: "api", err: err}
 		}
-		close(serveErr)
+	}()
+	go func() {
+		err := metricsSrv.Serve(metricsLn)
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- serverError{name: "metrics", err: err}
+		}
 	}()
 	log.Printf("listening on %s", addr)
+	log.Printf("metrics listening on %s", metricsAddr)
 	bots.RegisterWebhooks(cfg.WebhookBaseURL)
 
 	stop := make(chan os.Signal, 1)
@@ -103,23 +133,26 @@ func Run() error {
 	select {
 	case sig := <-stop:
 		log.Printf("received %s, shutting down", sig)
-	case err := <-serveErr:
-		if err != nil {
-			return fmt.Errorf("server: %w", err)
-		}
+	case serverErr := <-serveErr:
+		err = fmt.Errorf("%s server: %w", serverErr.name, serverErr.err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
-		return fmt.Errorf("shutdown: %w", err)
+	if shutdownErr := metricsSrv.Shutdown(ctx); shutdownErr != nil {
+		err = errors.Join(err, fmt.Errorf("metrics shutdown: %w", shutdownErr))
 	}
-	return nil
+	if shutdownErr := srv.Shutdown(ctx); shutdownErr != nil {
+		err = errors.Join(err, fmt.Errorf("api shutdown: %w", shutdownErr))
+	}
+	return err
 }
 
 func loadConfig() (config, error) {
 	cfg := config{
 		Port:           getenv("PORT", "8080"),
+		MetricsHost:    getenv("METRICS_HOST", "127.0.0.1"),
+		MetricsPort:    getenv("METRICS_PORT", "9091"),
 		APIToken:       strings.TrimSpace(os.Getenv("API_TOKEN")),
 		TelegramToken:  strings.TrimSpace(os.Getenv("TG_BOT_TOKEN")),
 		TelegramSecret: strings.TrimSpace(os.Getenv("TG_WEBHOOK_SECRET")),
@@ -133,8 +166,21 @@ func loadConfig() (config, error) {
 	if err != nil || port < 1 || port > 65535 {
 		return config{}, fmt.Errorf("PORT must be between 1 and 65535")
 	}
+	metricsPort, err := strconv.Atoi(cfg.MetricsPort)
+	if err != nil || metricsPort < 1 || metricsPort > 65535 {
+		return config{}, fmt.Errorf("METRICS_PORT must be between 1 and 65535")
+	}
+	if cfg.Port == cfg.MetricsPort {
+		return config{}, fmt.Errorf("METRICS_PORT must differ from PORT")
+	}
+	if cfg.MetricsHost != "localhost" && net.ParseIP(cfg.MetricsHost) == nil {
+		return config{}, fmt.Errorf("METRICS_HOST must be localhost or an IP address")
+	}
 	if len(cfg.APIToken) < 32 {
 		return config{}, fmt.Errorf("API_TOKEN must contain at least 32 characters")
+	}
+	if cfg.TelegramToken != "" && !bots.ValidTelegramToken(cfg.TelegramToken) {
+		return config{}, fmt.Errorf("TG_BOT_TOKEN has invalid format")
 	}
 	if cfg.TelegramToken != "" && !validWebhookSecret(cfg.TelegramSecret, 16) {
 		return config{}, fmt.Errorf("TG_WEBHOOK_SECRET must contain 16-256 characters A-Z, a-z, 0-9, _ or - when TG_BOT_TOKEN is set")
@@ -201,6 +247,7 @@ func databaseURLFromParts() (string, error) {
 
 func parseOrigins(raw, environment string) ([]string, error) {
 	var origins []string
+	seen := make(map[string]struct{})
 	for _, item := range strings.Split(raw, ",") {
 		origin := strings.TrimRight(strings.TrimSpace(item), "/")
 		if origin == "" {
@@ -209,6 +256,23 @@ func parseOrigins(raw, environment string) ([]string, error) {
 		if strings.EqualFold(environment, "production") && origin == "*" {
 			return nil, fmt.Errorf("CORS_ORIGINS cannot contain * in production")
 		}
+		if origin != "*" {
+			u, err := url.Parse(origin)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+				return nil, fmt.Errorf("CORS_ORIGINS contains invalid origin %q", origin)
+			}
+			if strings.EqualFold(environment, "production") && u.Scheme != "https" {
+				host := u.Hostname()
+				ip := net.ParseIP(host)
+				if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+					return nil, fmt.Errorf("CORS_ORIGINS must use HTTPS in production: %q", origin)
+				}
+			}
+		}
+		if _, exists := seen[origin]; exists {
+			continue
+		}
+		seen[origin] = struct{}{}
 		origins = append(origins, origin)
 	}
 	return origins, nil

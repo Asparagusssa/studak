@@ -3,6 +3,7 @@ package maxbot
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
@@ -17,18 +18,17 @@ type Update struct {
 
 type User struct {
 	UserID    int64  `json:"user_id"`
-	ID        int64  `json:"id"`
 	Name      string `json:"name"`
 	FirstName string `json:"first_name"`
 	Username  string `json:"username"`
 	IsBot     bool   `json:"is_bot"`
 }
 
-func (u User) MaxID() int64 {
-	if u.UserID != 0 {
-		return u.UserID
+func (u User) MaxID() (int64, error) {
+	if u.UserID <= 0 {
+		return 0, errors.New("MAX user_id is missing")
 	}
-	return u.ID
+	return u.UserID, nil
 }
 
 func (u User) DisplayName() string {
