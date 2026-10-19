@@ -5,7 +5,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/student-dating/internal/models"
+	"studak/internal/models"
 )
 
 var defaultUniversities = []models.University{

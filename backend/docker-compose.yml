@@ -1,0 +1,115 @@
+name: studak
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dating}
+      POSTGRES_USER: ${POSTGRES_USER:-dating}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_INITDB_ARGS: --data-checksums
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    shm_size: 128mb
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: migrate
+      args:
+        GOOSE_VERSION: v3.29.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: true
+    environment:
+      GOOSE_DRIVER: postgres
+      GOOSE_DBSTRING: sslmode=disable
+      GOOSE_MIGRATION_DIR: /migrations
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-dating}
+      PGUSER: ${POSTGRES_USER:-dating}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      PGSSLMODE: disable
+      NO_COLOR: "1"
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: backend
+    restart: unless-stopped
+    init: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: true
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      APP_ENV: production
+      GIN_MODE: release
+      PORT: "8080"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB:-dating}
+      DB_USER: ${POSTGRES_USER:-dating}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      DB_SSLMODE: disable
+      DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-25}
+      DB_MAX_IDLE_CONNS: ${DB_MAX_IDLE_CONNS:-10}
+      DB_CONN_MAX_LIFETIME: ${DB_CONN_MAX_LIFETIME:-30m}
+      DB_CONN_MAX_IDLE_TIME: ${DB_CONN_MAX_IDLE_TIME:-5m}
+      API_TOKEN: ${API_TOKEN:?set API_TOKEN in .env}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      TG_BOT_TOKEN: ${TG_BOT_TOKEN:-}
+      TG_WEBHOOK_SECRET: ${TG_WEBHOOK_SECRET:-}
+      MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
+      MAX_WEBHOOK_SECRET: ${MAX_WEBHOOK_SECRET:-}
+      WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL:-}
+    ports:
+      - "127.0.0.1:${PORT:-8080}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - backend
+
+volumes:
+  postgres_data:
+
+networks:
+  backend:
+    driver: bridge
