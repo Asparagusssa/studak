@@ -22,6 +22,7 @@ import (
 	"studak/internal/api"
 	"studak/internal/bots"
 	"studak/internal/bots/maxbot"
+	"studak/internal/bots/telegrambot"
 	"studak/internal/database"
 )
 
@@ -65,11 +66,27 @@ func Run() error {
 	if cfg.MaxToken != "" {
 		maxBot = maxbot.New(db, cfg.MaxToken, cfg.MaxSecret)
 	}
+	var telegramBot *telegrambot.Bot
+	if cfg.TelegramToken != "" {
+		telegramBot = telegrambot.New(db, cfg.TelegramToken, cfg.TelegramSecret)
+	}
+	transports := map[string]maxbot.Messenger{}
+	if maxBot != nil {
+		transports["max"] = maxBot.Client
+	}
+	if telegramBot != nil {
+		transports["telegram"] = telegramBot.Client
+		telegramBot.Engine.Peers = transports
+	}
+	if maxBot != nil {
+		maxBot.Peers = transports
+	}
 	router := api.NewRouter(db, api.Config{
 		AllowedOrigins: cfg.AllowedOrigins,
 		APIToken:       cfg.APIToken,
 		TelegramSecret: cfg.TelegramSecret,
 		Max:            maxBot,
+		Telegram:       telegramBot,
 	})
 
 	addr := net.JoinHostPort("", cfg.Port)

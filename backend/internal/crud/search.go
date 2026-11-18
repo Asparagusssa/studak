@@ -20,11 +20,19 @@ func GetNextProfile(db *gorm.DB, userID uint) (*models.User, error) {
 		return nil, wrapNotFound(err)
 	}
 
+	if me.Paused {
+		return nil, ErrProfilePaused
+	}
+
 	reacted := db.Model(&models.Like{}).Select("to_user_id").Where("from_user_id = ?", me.ID)
 
-	q := db.Model(&models.User{}).
-		Where("users.id <> ?", me.ID).
+	q := excludeBlocked(db.Model(&models.User{}), me.ID).
+		Where("users.id <> ? AND users.paused = ?", me.ID, false).
 		Where("users.id NOT IN (?)", reacted)
+
+	if me.SearchGender == models.SearchGenderFemale || me.SearchGender == models.SearchGenderMale {
+		q = q.Where("users.gender = ?", me.SearchGender)
+	}
 
 	switch me.SearchMode {
 	case models.SearchModeMyOnly:
@@ -62,6 +70,9 @@ func GetNextProfile(db *gorm.DB, userID uint) (*models.User, error) {
 		}
 		return &candidate, nil
 	}
+	// Keep the pivot queries independent so the wraparound does not also
+	// inherit the first query's lower bound.
+	q = q.Session(&gorm.Session{})
 	if candidate, err := find(q.Where("users.id >= ?", pivot)); err == nil {
 		return candidate, nil
 	} else if err != gorm.ErrRecordNotFound {

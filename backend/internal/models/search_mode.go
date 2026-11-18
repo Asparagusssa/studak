@@ -13,3 +13,17 @@ func IsValidSearchMode(mode string) bool {
 	}
 	return false
 }
+
+const (
+	SearchGenderAll    = "all"
+	SearchGenderFemale = "female"
+	SearchGenderMale   = "male"
+)
+
+func IsValidSearchGender(gender string) bool {
+	switch gender {
+	case SearchGenderAll, SearchGenderFemale, SearchGenderMale:
+		return true
+	}
+	return false
+}

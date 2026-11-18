@@ -23,7 +23,7 @@ func TestProtectedAPIAndPrivateFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.University{}, &models.User{}, &models.Like{}, &models.BotSession{}); err != nil {
+	if err := db.AutoMigrate(&models.University{}, &models.User{}, &models.Like{}, &models.BotSession{}, &models.UserBlock{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.SeedUniversities(db); err != nil {

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,13 +16,15 @@ import (
 	"gorm.io/gorm"
 
 	"studak/internal/bots/maxbot"
+	"studak/internal/bots/telegrambot"
 	"studak/internal/crud"
 	"studak/internal/logx"
 )
 
 type Handler struct {
-	DB  *gorm.DB
-	Max *maxbot.Bot
+	DB       *gorm.DB
+	Max      *maxbot.Bot
+	Telegram *telegrambot.Bot
 }
 
 type Config struct {
@@ -31,6 +32,7 @@ type Config struct {
 	APIToken       string
 	TelegramSecret string
 	Max            *maxbot.Bot
+	Telegram       *telegrambot.Bot
 }
 
 var (
@@ -60,7 +62,7 @@ func init() {
 }
 
 func NewRouter(db *gorm.DB, cfg Config) *gin.Engine {
-	h := &Handler{DB: db, Max: cfg.Max}
+	h := &Handler{DB: db, Max: cfg.Max, Telegram: cfg.Telegram}
 
 	r := gin.New()
 	r.Use(gin.Logger(), httpMetrics(), gin.Recovery(), requestTimeout(25*time.Second), securityHeaders(), cors(cfg.AllowedOrigins))
@@ -77,8 +79,8 @@ func NewRouter(db *gorm.DB, cfg Config) *gin.Engine {
 	protected.POST("/like", h.setLike)
 	protected.GET("/universities", h.searchUniversities)
 
-	if cfg.TelegramSecret != "" {
-		r.POST("/webhook/tg", webhookSecret("X-Telegram-Bot-Api-Secret-Token", cfg.TelegramSecret), limitBody(1<<20), h.webhookStub("telegram"))
+	if h.Telegram != nil {
+		r.POST("/webhook/tg", func(c *gin.Context) { h.Telegram.ServeHTTP(c.Writer, c.Request) })
 	}
 	if h.Max != nil {
 		r.POST("/webhook/max", h.maxWebhook)
@@ -227,16 +229,6 @@ func (h *Handler) maxWebhook(c *gin.Context) {
 	h.Max.ServeHTTP(c.Writer, c.Request)
 }
 
-// Telegram update handling is not implemented yet; acknowledge so Telegram
-// does not keep retrying deliveries.
-func (h *Handler) webhookStub(source string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		body, _ := c.GetRawData()
-		log.Printf("webhook %s: received %d bytes", source, len(body))
-		c.Status(http.StatusOK)
-	}
-}
-
 func parseID(c *gin.Context, param string) (uint, bool) {
 	id, err := strconv.ParseUint(c.Param(param), 10, 64)
 	if err != nil || id == 0 {
@@ -252,6 +244,8 @@ func handleErr(c *gin.Context, err error) {
 		respondError(c, http.StatusBadRequest, err.Error())
 	case errors.Is(err, crud.ErrNotFound):
 		respondError(c, http.StatusNotFound, "not found")
+	case errors.Is(err, crud.ErrProfilePaused):
+		respondError(c, http.StatusConflict, "profile is paused")
 	case errors.Is(err, crud.ErrNoProfiles):
 		respondError(c, http.StatusNotFound, "no more profiles")
 	case errors.Is(err, crud.ErrAlreadyExists):

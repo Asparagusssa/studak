@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"studak/internal/models"
 )
@@ -26,8 +27,11 @@ type CreateUserInput struct {
 	Gender                 string `json:"gender"`
 	Bio                    string `json:"bio"`
 	PhotoURL               string `json:"photo_url"`
+	MaxPhotoToken          string `json:"-"`
+	TelegramPhotoID        string `json:"-"`
 	MyUniversityID         *uint  `json:"my_university_id"`
 	SearchMode             string `json:"search_mode"`
+	SearchGender           string `json:"-"`
 	PreferredUniversityIDs []uint `json:"preferred_university_ids"`
 }
 
@@ -39,23 +43,32 @@ type UpdateUserInput struct {
 	Gender                 *string `json:"gender"`
 	Bio                    *string `json:"bio"`
 	PhotoURL               *string `json:"photo_url"`
+	MaxPhotoToken          *string `json:"-"`
+	TelegramPhotoID        *string `json:"-"`
 	MyUniversityID         *uint   `json:"my_university_id"`
 	SearchMode             *string `json:"search_mode"`
+	SearchGender           *string `json:"-"`
 	PreferredUniversityIDs *[]uint `json:"preferred_university_ids"`
 }
 
 func CreateUser(db *gorm.DB, in CreateUserInput) (*models.User, error) {
 	user := models.User{
-		TelegramID:     in.TelegramID,
-		MaxID:          in.MaxID,
-		WebUUID:        strings.TrimSpace(in.WebUUID),
-		Name:           strings.TrimSpace(in.Name),
-		Age:            in.Age,
-		Gender:         strings.TrimSpace(in.Gender),
-		Bio:            strings.TrimSpace(in.Bio),
-		PhotoURL:       strings.TrimSpace(in.PhotoURL),
-		MyUniversityID: in.MyUniversityID,
-		SearchMode:     strings.TrimSpace(in.SearchMode),
+		TelegramID:      in.TelegramID,
+		MaxID:           in.MaxID,
+		WebUUID:         strings.TrimSpace(in.WebUUID),
+		Name:            strings.TrimSpace(in.Name),
+		Age:             in.Age,
+		Gender:          strings.TrimSpace(in.Gender),
+		Bio:             strings.TrimSpace(in.Bio),
+		PhotoURL:        strings.TrimSpace(in.PhotoURL),
+		MaxPhotoToken:   strings.TrimSpace(in.MaxPhotoToken),
+		TelegramPhotoID: strings.TrimSpace(in.TelegramPhotoID),
+		MyUniversityID:  in.MyUniversityID,
+		SearchMode:      strings.TrimSpace(in.SearchMode),
+		SearchGender:    strings.TrimSpace(in.SearchGender),
+	}
+	if user.MaxPhotoToken != "" || user.TelegramPhotoID != "" {
+		user.PhotoURL = ""
 	}
 	if user.WebUUID == "" {
 		user.WebUUID = uuid.NewString()
@@ -68,6 +81,9 @@ func CreateUser(db *gorm.DB, in CreateUserInput) (*models.User, error) {
 	}
 	if user.SearchMode == "" {
 		user.SearchMode = models.SearchModeAll
+	}
+	if user.SearchGender == "" {
+		user.SearchGender = models.SearchGenderAll
 	}
 	if err := validateUser(&user); err != nil {
 		return nil, err
@@ -103,7 +119,7 @@ func CreateUser(db *gorm.DB, in CreateUserInput) (*models.User, error) {
 func UpdateUser(db *gorm.DB, id uint, in UpdateUserInput) (*models.User, error) {
 	err := db.Transaction(func(tx *gorm.DB) error {
 		var user models.User
-		if err := tx.First(&user, id).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&user, id).Error; err != nil {
 			return wrapNotFound(err)
 		}
 
@@ -121,6 +137,18 @@ func UpdateUser(db *gorm.DB, id uint, in UpdateUserInput) (*models.User, error) 
 		}
 		if in.PhotoURL != nil {
 			user.PhotoURL = strings.TrimSpace(*in.PhotoURL)
+			user.MaxPhotoToken = ""
+			user.TelegramPhotoID = ""
+		}
+		if in.MaxPhotoToken != nil {
+			user.MaxPhotoToken = strings.TrimSpace(*in.MaxPhotoToken)
+			user.PhotoURL = ""
+			user.TelegramPhotoID = ""
+		}
+		if in.TelegramPhotoID != nil {
+			user.TelegramPhotoID = strings.TrimSpace(*in.TelegramPhotoID)
+			user.PhotoURL = ""
+			user.MaxPhotoToken = ""
 		}
 		if in.MyUniversityID != nil {
 			if err := ensureUniversityExists(tx, in.MyUniversityID); err != nil {
@@ -130,6 +158,9 @@ func UpdateUser(db *gorm.DB, id uint, in UpdateUserInput) (*models.User, error) 
 		}
 		if in.SearchMode != nil {
 			user.SearchMode = strings.TrimSpace(*in.SearchMode)
+		}
+		if in.SearchGender != nil {
+			user.SearchGender = strings.TrimSpace(*in.SearchGender)
 		}
 		if err := validateUser(&user); err != nil {
 			return err
@@ -227,6 +258,9 @@ func validateUser(u *models.User) error {
 	if u.MyUniversityID != nil && *u.MyUniversityID == 0 {
 		return invalid("my_university_id must be a positive integer")
 	}
+	if !models.IsValidSearchGender(u.SearchGender) {
+		return invalid("search gender must be all, female or male")
+	}
 	if !models.IsValidSearchMode(u.SearchMode) {
 		return invalid("search_mode must be one of: my_only, selected, all")
 	}
@@ -288,4 +322,15 @@ func wrapNotFound(err error) error {
 
 func isUniqueViolation(err error) bool {
 	return strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
+func GetUserByTelegramID(db *gorm.DB, telegramID int64) (*models.User, error) {
+	var user models.User
+	if err := db.Preload("MyUniversity").Preload("PreferredUniversities").Where("telegram_id = ?", telegramID).First(&user).Error; err != nil {
+		return nil, wrapNotFound(err)
+	}
+	if user.PreferredUniversities == nil {
+		user.PreferredUniversities = []models.University{}
+	}
+	return &user, nil
 }
