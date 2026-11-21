@@ -246,6 +246,8 @@ func handleErr(c *gin.Context, err error) {
 		respondError(c, http.StatusNotFound, "not found")
 	case errors.Is(err, crud.ErrProfilePaused):
 		respondError(c, http.StatusConflict, "profile is paused")
+	case errors.Is(err, crud.ErrContactRequired):
+		respondError(c, http.StatusConflict, "profile contact is required")
 	case errors.Is(err, crud.ErrNoProfiles):
 		respondError(c, http.StatusNotFound, "no more profiles")
 	case errors.Is(err, crud.ErrAlreadyExists):

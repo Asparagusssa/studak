@@ -33,16 +33,22 @@ func (b *Bot) transport() Messenger {
 }
 
 func (b *Bot) lookupUser(id int64) (*models.User, error) {
+	var user *models.User
+	var err error
 	if b.channel() == "telegram" {
-		return crud.GetUserByTelegramID(b.DB, id)
+		user, err = crud.GetUserByTelegramID(b.DB, id)
+	} else {
+		user, err = crud.GetUserByMaxID(b.DB, id)
 	}
-	return crud.GetUserByMaxID(b.DB, id)
+	if err == nil && user.Platform() != b.channel() {
+		return nil, crud.ErrNotFound
+	}
+	return user, err
 }
 
-// Delivery always prefers the receiving user's own platform and never routes
-// using a raw numeric ID from the other messenger.
+// Delivery stays inside the current messenger's profile pool.
 func (b *Bot) destination(peer *models.User) (Messenger, int64, string) {
-	if peer == nil {
+	if peer == nil || peer.Platform() != b.channel() {
 		return nil, 0, ""
 	}
 	ids := map[string]*int64{"max": peer.MaxID, "telegram": peer.TelegramID}
@@ -50,24 +56,12 @@ func (b *Bot) destination(peer *models.User) (Messenger, int64, string) {
 	if id := ids[current]; id != nil && *id > 0 {
 		return b.transport(), *id, current
 	}
-	for _, platform := range []string{"max", "telegram"} {
-		if id := ids[platform]; id != nil && *id > 0 && b.Peers[platform] != nil {
-			return b.Peers[platform], *id, platform
-		}
-	}
 	return nil, 0, ""
 }
 
 func (b *Bot) canNotify(peer *models.User) bool {
 	client, id, _ := b.destination(peer)
 	return client != nil && id > 0
-}
-
-func (b *Bot) peerEngine(channel string, client Messenger) *Bot {
-	copy := *b
-	copy.Channel = channel
-	copy.Messenger = client
-	return &copy
 }
 
 func (b *Bot) notify(peer *models.User, text string, buttons [][]Button) error {

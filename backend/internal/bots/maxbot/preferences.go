@@ -8,7 +8,7 @@ import (
 )
 
 func (b *Bot) askWho(s *models.BotSession) error {
-	text := "4/8 · Кого показать в ленте? Этот выбор можно поменять позже."
+	text := b.onboardingPrompt(4, "Кого показать в ленте? Этот выбор можно поменять позже.")
 	rows := [][]Button{
 		{CallbackButton("Девушек", "who:"+models.SearchGenderFemale), CallbackButton("Парней", "who:"+models.SearchGenderMale)},
 		{CallbackButton("Всех", "who:"+models.SearchGenderAll)},

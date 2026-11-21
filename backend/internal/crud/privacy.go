@@ -13,7 +13,7 @@ const pairBlock = "(blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND bl
 func lockUserPair(tx *gorm.DB, a, b uint) ([]models.User, error) {
 	var users []models.User
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Select("id", "paused").Where("id IN ?", []uint{a, b}).Order("id").Find(&users).Error; err != nil {
+		Select("id", "paused", "telegram_id", "max_id", "max_contact").Where("id IN ?", []uint{a, b}).Order("id").Find(&users).Error; err != nil {
 		return nil, err
 	}
 	if len(users) != 2 {
@@ -40,8 +40,12 @@ func BlockUser(db *gorm.DB, actor, peer uint) error {
 		return ErrInvalidInput
 	}
 	return db.Transaction(func(tx *gorm.DB) error {
-		if _, err := lockUserPair(tx, actor, peer); err != nil {
+		users, err := lockUserPair(tx, actor, peer)
+		if err != nil {
 			return err
+		}
+		if users[0].Platform() == "" || users[0].Platform() != users[1].Platform() {
+			return ErrNotFound
 		}
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&models.UserBlock{BlockerID: actor, BlockedID: peer}).Error; err != nil {
 			return err
@@ -56,8 +60,12 @@ func UnblockUser(db *gorm.DB, actor, peer uint) error {
 }
 
 func ListBlockedUsers(db *gorm.DB, actor uint, offset, limit int) ([]models.User, error) {
+	var viewer models.User
+	if err := db.First(&viewer, actor).Error; err != nil {
+		return nil, wrapNotFound(err)
+	}
 	var users []models.User
-	err := db.Joins("JOIN user_blocks AS blocked ON blocked.blocked_id = users.id").
+	err := samePlatformProfiles(db, &viewer).Joins("JOIN user_blocks AS blocked ON blocked.blocked_id = users.id").
 		Where("blocked.blocker_id = ?", actor).
 		Order("blocked.created_at DESC, blocked.blocked_id DESC").Offset(offset).Limit(limit).
 		Find(&users).Error

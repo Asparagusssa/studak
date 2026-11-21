@@ -121,6 +121,7 @@ func TestMaxDatingFlow(t *testing.T) {
 		Callback:   &Callback{CallbackID: "cb3", Payload: "mode:all", User: User{UserID: 1001}},
 	}))
 	must(bot.HandleUpdate(textUpdate(1001, "ищу одногруппников")))
+	must(bot.HandleUpdate(textUpdate(1001, "https://t.me/anna_test")))
 	must(bot.HandleBody([]byte(`{"update_type":"message_created","message":{
 		"sender":{"user_id":1001},"recipient":{"chat_type":"dialog"},"body":{"attachments":[
 			{"type":"image","payload":{"token":"first-image"}},
@@ -173,7 +174,7 @@ func TestMaxDatingFlow(t *testing.T) {
 	}
 
 	other, err := crud.CreateUser(db, crud.CreateUserInput{
-		Name: "Борис", Age: 21, Gender: "male", Bio: "МФТИ", MaxPhotoToken: "boris-photo",
+		MaxID: new(int64(1002)), MaxContact: "+79991234567", Name: "Борис", Age: 21, Gender: "male", Bio: "МФТИ", MaxPhotoToken: "boris-photo",
 		MyUniversityID: &msu.ID, SearchMode: models.SearchModeAll,
 	})
 	if err != nil {
@@ -181,7 +182,7 @@ func TestMaxDatingFlow(t *testing.T) {
 	}
 
 	woman, err := crud.CreateUser(db, crud.CreateUserInput{
-		Name: "Варя", Age: 22, Gender: "female",
+		MaxID: new(int64(1003)), MaxContact: "+79991234568", Name: "Варя", Age: 22, Gender: "female",
 		MyUniversityID: &msu.ID, SearchMode: models.SearchModeAll,
 	})
 	must(err)
@@ -274,6 +275,7 @@ func TestPhotoStepCannotBeSkipped(t *testing.T) {
 	}
 	session.Step = stepPhoto
 	session.DraftName, session.DraftAge = "Лена", 21
+	session.DraftContact = "+79991234567"
 	if err := db.Save(session).Error; err != nil {
 		t.Fatal(err)
 	}

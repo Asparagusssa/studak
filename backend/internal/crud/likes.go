@@ -53,6 +53,21 @@ func setLike(db *gorm.DB, fromUserID, toUserID uint, isLike, once, inbox bool) (
 		if err != nil {
 			return err
 		}
+		from, to := &users[0], &users[1]
+		if from.ID != fromUserID {
+			from, to = to, from
+		}
+		if from.Platform() == "" || from.Platform() != to.Platform() {
+			return ErrNotFound
+		}
+		if from.Platform() == "max" {
+			if _, valid := models.NormalizeMaxContact(from.MaxContact); !valid {
+				return ErrContactRequired
+			}
+			if _, valid := models.NormalizeMaxContact(to.MaxContact); !valid {
+				return ErrNotFound
+			}
+		}
 		blocked, err := IsPairBlocked(tx, fromUserID, toUserID)
 		if err != nil {
 			return err
@@ -130,16 +145,16 @@ func setLike(db *gorm.DB, fromUserID, toUserID uint, isLike, once, inbox bool) (
 // NextIncomingLike lists positive incoming reactions. Skipped senders can
 // reappear after the cooldown while their incoming like remains active.
 func NextIncomingLike(db *gorm.DB, viewerID uint) (*models.User, error) {
-	var viewer models.User
-	if err := db.Select("id", "paused").First(&viewer, viewerID).Error; err != nil {
-		return nil, wrapNotFound(err)
+	viewer, err := profileViewer(db, viewerID)
+	if err != nil {
+		return nil, err
 	}
 	if viewer.Paused {
 		return nil, ErrProfilePaused
 	}
 	answered := excludedReactions(db, viewerID)
 	var user models.User
-	err := excludeBlocked(db, viewerID).Preload("MyUniversity").
+	err = eligibleProfiles(excludeBlocked(db, viewerID), viewer).Preload("MyUniversity").
 		Where("users.paused = ?", false).
 		Joins("JOIN likes AS incoming ON incoming.from_user_id = users.id").
 		Where("incoming.to_user_id = ? AND incoming.is_like = ?", viewerID, true).
@@ -153,8 +168,12 @@ func NextIncomingLike(db *gorm.DB, viewerID uint) (*models.User, error) {
 }
 
 func ListMatches(db *gorm.DB, userID uint, offset, limit int) ([]models.User, error) {
+	viewer, err := profileViewer(db, userID)
+	if err != nil {
+		return nil, err
+	}
 	var users []models.User
-	err := excludeBlocked(db, userID).
+	err = eligibleProfiles(excludeBlocked(db, userID), viewer).
 		Joins("JOIN likes AS outgoing ON outgoing.to_user_id = users.id").
 		Where("outgoing.from_user_id = ? AND outgoing.is_like = ? AND outgoing.is_mutual = ?", userID, true, true).
 		Order("outgoing.updated_at DESC, outgoing.id DESC").Offset(offset).Limit(limit).
@@ -163,8 +182,12 @@ func ListMatches(db *gorm.DB, userID uint, offset, limit int) ([]models.User, er
 }
 
 func MatchedUser(db *gorm.DB, userID, peerID uint) (*models.User, error) {
+	viewer, err := profileViewer(db, userID)
+	if err != nil {
+		return nil, err
+	}
 	var user models.User
-	err := excludeBlocked(db, userID).
+	err = eligibleProfiles(excludeBlocked(db, userID), viewer).
 		Joins("JOIN likes AS outgoing ON outgoing.to_user_id = users.id").
 		Where("users.id = ? AND outgoing.from_user_id = ? AND outgoing.is_like = ? AND outgoing.is_mutual = ?", peerID, userID, true, true).
 		Take(&user).Error

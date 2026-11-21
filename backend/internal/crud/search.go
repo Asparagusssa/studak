@@ -21,9 +21,9 @@ func GetNextProfile(db *gorm.DB, userID uint) (*models.User, error) {
 }
 
 func getNextProfile(db *gorm.DB, userID uint, priorityFirst bool) (*models.User, error) {
-	var me models.User
-	if err := db.First(&me, userID).Error; err != nil {
-		return nil, wrapNotFound(err)
+	me, err := profileViewer(db, userID)
+	if err != nil {
+		return nil, err
 	}
 
 	if me.Paused {
@@ -32,7 +32,7 @@ func getNextProfile(db *gorm.DB, userID uint, priorityFirst bool) (*models.User,
 
 	reacted := excludedReactions(db, me.ID)
 
-	q := excludeBlocked(db.Model(&models.User{}), me.ID).
+	q := eligibleProfiles(excludeBlocked(db.Model(&models.User{}), me.ID), me).
 		Where("users.id <> ? AND users.paused = ?", me.ID, false).
 		Where("users.id NOT IN (?)", reacted).
 		Where("users.age BETWEEN ? AND ?", max(MinAge, me.Age-2), min(MaxAge, me.Age+2))

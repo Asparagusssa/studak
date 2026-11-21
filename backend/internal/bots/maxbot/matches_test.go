@@ -28,7 +28,7 @@ func TestIncomingLikesAndDirectContacts(t *testing.T) {
 	}
 	create := func(name string, maxID int64) *models.User {
 		t.Helper()
-		user, err := crud.CreateUser(db, crud.CreateUserInput{Name: name, Age: 21, MaxID: &maxID, MaxProfileURL: fmt.Sprintf("https://max.ru/u/user%d", maxID)})
+		user, err := crud.CreateUser(db, crud.CreateUserInput{Name: name, Age: 21, MaxID: &maxID, MaxContact: fmt.Sprintf("https://max.ru/u/user%d", maxID)})
 		must(err)
 		return user
 	}

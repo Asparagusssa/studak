@@ -23,23 +23,24 @@ const (
 	channelMax        = "max"
 	maxWebhookUpdates = 10
 
-	stepStart      = "start"
-	stepName       = "name"
-	stepAge        = "age"
-	stepGender     = "gender"
-	stepWho        = "who"
-	stepWhoFilter  = "who_filter"
-	stepUniversity = "university"
-	stepSearchMode = "search_mode"
-	stepPreferred  = "preferred"
-	stepFilterMode = "filter_mode"
-	stepFilterPref = "filter_preferred"
-	stepBio        = "bio"
-	stepPhoto      = "photo"
-	stepEditPhoto  = "edit_photo"
-	stepContact    = "contact"
-	stepMenu       = "menu"
-	stepWrite      = "write"
+	stepStart               = "start"
+	stepName                = "name"
+	stepAge                 = "age"
+	stepGender              = "gender"
+	stepWho                 = "who"
+	stepWhoFilter           = "who_filter"
+	stepUniversity          = "university"
+	stepSearchMode          = "search_mode"
+	stepPreferred           = "preferred"
+	stepFilterMode          = "filter_mode"
+	stepFilterPref          = "filter_preferred"
+	stepBio                 = "bio"
+	stepPhoto               = "photo"
+	stepEditPhoto           = "edit_photo"
+	stepContact             = "contact"
+	stepRegistrationContact = "registration_contact"
+	stepMenu                = "menu"
+	stepWrite               = "write"
 )
 
 var errInvalidUpdate = errors.New("invalid MAX update")
@@ -48,7 +49,6 @@ type Bot struct {
 	DB        *gorm.DB
 	Channel   string
 	Messenger Messenger
-	Peers     map[string]Messenger
 	Client    *Client
 	Secret    string
 	ctx       context.Context
@@ -182,6 +182,11 @@ func (b *Bot) onStart(maxID int64, displayName string) error {
 		if err := b.saveSession(s); err != nil {
 			return err
 		}
+		if b.channel() == channelMax {
+			if _, valid := models.NormalizeMaxContact(user.MaxContact); !valid {
+				return b.handleContact(s, "edit")
+			}
+		}
 		if user.Paused {
 			return b.pausedMenu(maxID)
 		}
@@ -196,7 +201,7 @@ func (b *Bot) onStart(maxID int64, displayName string) error {
 	if err := b.saveSession(s); err != nil {
 		return err
 	}
-	text := "Привет! Это Студак 🎓\nЗдесь можно знакомиться со студентами своего вуза или колледжа и искать в других учебных заведениях. Заполни анкету с фото, и я покажу, кто есть в ленте. После взаимного лайка вы получите контакты друг друга для общения напрямую.\n\n1/8 · Как тебя зовут?"
+	text := "Привет! Это Студак 🎓\nЗдесь можно знакомиться со студентами своего вуза или колледжа и искать в других учебных заведениях. Заполни анкету с фото, и я покажу, кто есть в ленте. После взаимного лайка вы получите контакты друг друга для общения напрямую.\n\n" + b.onboardingPrompt(1, "Как тебя зовут?")
 	if displayName != "" {
 		text += fmt.Sprintf("\nМожешь написать «%s» или выбрать другое имя.", displayName)
 	}
@@ -226,7 +231,7 @@ func (b *Bot) onMessage(maxID int64, body Body) error {
 		}
 		return b.cancelWrite(s)
 	}
-	if s.Step == stepContact {
+	if s.Step == stepContact || s.Step == stepRegistrationContact {
 		return b.saveMaxContact(s, body)
 	}
 	if strings.HasPrefix(s.Step, deleteStepPrefix) {
@@ -274,7 +279,7 @@ func (b *Bot) onMessage(maxID int64, body Body) error {
 	switch s.Step {
 	case stepName, stepStart, "":
 		if text == "" {
-			return b.send(maxID, "1/8 · Напиши имя, которое увидят другие в анкете.", nil)
+			return b.send(maxID, b.onboardingPrompt(1, "Напиши имя, которое увидят другие в анкете."), nil)
 		}
 		if len([]rune(text)) > 100 {
 			return b.send(maxID, "Имя не поместилось. Напиши покороче — до 100 символов.", nil)
@@ -284,7 +289,7 @@ func (b *Bot) onMessage(maxID int64, body Body) error {
 		if err := b.saveSession(s); err != nil {
 			return err
 		}
-		return b.send(maxID, "2/8 · Сколько тебе лет? Напиши число, например 20.", nil)
+		return b.send(maxID, b.onboardingPrompt(2, "Сколько тебе лет? Напиши число, например 20."), nil)
 	case stepAge:
 		age, err := strconv.Atoi(text)
 		if err != nil || age < crud.MinAge || age > crud.MaxAge {
@@ -313,7 +318,7 @@ func (b *Bot) onMessage(maxID int64, body Body) error {
 		} else {
 			s.DraftBio = ""
 		}
-		return b.beginPhoto(s, stepPhoto)
+		return b.beginRegistrationContact(s, "")
 	case stepMenu:
 		return b.send(maxID, menuText, menuKeyboard())
 	default:
@@ -456,7 +461,7 @@ func (b *Bot) onCallback(maxID int64, payload string) error {
 			return b.resume(s, staleButtonText)
 		}
 		s.DraftBio = ""
-		return b.beginPhoto(s, stepPhoto)
+		return b.beginRegistrationContact(s, "")
 	case "photo":
 		switch arg {
 		case "skip":
@@ -518,7 +523,7 @@ func (b *Bot) onCallback(maxID int64, payload string) error {
 			if err := b.saveSession(s); err != nil {
 				return err
 			}
-			return b.send(maxID, "Старая анкета останется видна, пока не сохранишь новую.\n\n1/8 · Какое имя указать в анкете?", nil)
+			return b.send(maxID, "Старая анкета останется видна, пока не сохранишь новую.\n\n"+b.onboardingPrompt(1, "Какое имя указать в анкете?"), nil)
 		case "home":
 			return b.onStart(maxID, "")
 		}
@@ -529,13 +534,13 @@ func (b *Bot) onCallback(maxID int64, payload string) error {
 }
 
 func (b *Bot) askGender(maxID int64) error {
-	return b.send(maxID, "3/8 · Как указать тебя в анкете?", [][]Button{
+	return b.send(maxID, b.onboardingPrompt(3, "Как указать тебя в анкете?"), [][]Button{
 		{CallbackButton("Парень", "gender:male"), CallbackButton("Девушка", "gender:female")},
 	})
 }
 
 func (b *Bot) askSearchMode(maxID int64, filterOnly bool) error {
-	text := "6/8 · Где хочешь знакомиться? Этот выбор можно поменять позже."
+	text := b.onboardingPrompt(6, "Где хочешь знакомиться? Этот выбор можно поменять позже.")
 	if filterOnly {
 		text = "Где искать новые анкеты? 🎓"
 	}
@@ -547,11 +552,11 @@ func (b *Bot) askSearchMode(maxID int64, filterOnly bool) error {
 }
 
 func (b *Bot) askUniversity(maxID int64, intro string) error {
-	return b.send(maxID, withIntro(intro, "5/8 · Где ты учишься? Напиши название или сокращение вуза или колледжа, например УдГУ или ИПЭК. Можно написать часть названия — предложу близкие варианты."), nil)
+	return b.send(maxID, withIntro(intro, b.onboardingPrompt(5, "Где ты учишься? Напиши название или сокращение вуза или колледжа, например УдГУ или ИПЭК. Можно написать часть названия — предложу близкие варианты.")), nil)
 }
 
 func (b *Bot) askBio(maxID int64, intro string) error {
-	return b.send(maxID, withIntro(intro, "7/8 · Хочешь рассказать о себе? Напиши, например, чем любишь заниматься после пар. Можно оставить анкету без описания."), bioKeyboard())
+	return b.send(maxID, withIntro(intro, b.onboardingPrompt(7, "Хочешь рассказать о себе? Напиши, например, чем любишь заниматься после пар. Можно оставить анкету без описания.")), bioKeyboard())
 }
 
 func (b *Bot) askPreferred(s *models.BotSession, intro string) error {
@@ -585,7 +590,7 @@ func (b *Bot) resume(s *models.BotSession, intro string) error {
 		}
 		return b.send(id, menuText, menuKeyboard())
 	case stepAge:
-		return b.send(id, withIntro(intro, "2/8 · Сколько тебе лет? Напиши число, например 20."), nil)
+		return b.send(id, withIntro(intro, b.onboardingPrompt(2, "Сколько тебе лет? Напиши число, например 20.")), nil)
 	case stepGender:
 		return b.askGender(id)
 	case stepWho, stepWhoFilter:
@@ -602,12 +607,12 @@ func (b *Bot) resume(s *models.BotSession, intro string) error {
 		return b.askPhoto(s, intro)
 	case stepWrite:
 		return b.cancelWrite(s)
-	case stepContact:
+	case stepContact, stepRegistrationContact:
 		return b.askMaxContact(s, intro)
 	case stepMenu:
 		return b.send(id, menuText, menuKeyboard())
 	default:
-		return b.send(id, withIntro(intro, "1/8 · Как тебя зовут? Напиши имя для анкеты."), nil)
+		return b.send(id, withIntro(intro, b.onboardingPrompt(1, "Как тебя зовут? Напиши имя для анкеты.")), nil)
 	}
 }
 
@@ -652,6 +657,11 @@ func (b *Bot) offerUniversities(s *models.BotSession, query string) error {
 }
 
 func (b *Bot) finishOnboarding(s *models.BotSession, photoToken *string) error {
+	if b.channel() == channelMax {
+		if _, valid := models.NormalizeMaxContact(s.DraftContact); !valid {
+			return b.beginRegistrationContact(s, "Перед публикацией нужен контакт для связи.")
+		}
+	}
 	if photoToken == nil || strings.TrimSpace(*photoToken) == "" {
 		return b.askPhoto(s, "Фото обязательно: без него анкету нельзя опубликовать.")
 	}
@@ -667,13 +677,17 @@ func (b *Bot) finishOnboarding(s *models.BotSession, photoToken *string) error {
 		return err
 	}
 	text := "Анкета с фото готова! ✨\nМожешь посмотреть, кто есть в ленте, или сначала открыть свою анкету."
-	if b.channel() == channelMax && user.MaxProfileURL == "" {
-		text += "\n\nДобавь личную ссылку MAX в «Моя анкета» → «Контакт MAX». Она будет доступна только после взаимного лайка."
-	}
 	return b.send(s.ExternalID, text, menuKeyboard())
 }
 
 func (b *Bot) saveProfile(s *models.BotSession, photoToken *string) (*models.User, error) {
+	if b.channel() == channelMax {
+		contact, valid := models.NormalizeMaxContact(s.DraftContact)
+		if !valid {
+			return nil, crud.ErrContactRequired
+		}
+		s.DraftContact = contact
+	}
 	mode := s.DraftSearchMode
 	if mode == "" {
 		mode = models.SearchModeAll
@@ -697,6 +711,8 @@ func (b *Bot) saveProfile(s *models.BotSession, photoToken *string) (*models.Use
 		}
 		if b.channel() == "telegram" {
 			in.TelegramUsername = &s.MessengerUsername
+		} else {
+			in.MaxContact = &s.DraftContact
 		}
 		return crud.UpdateUser(b.DB, *s.UserID, in)
 	}
@@ -715,6 +731,8 @@ func (b *Bot) saveProfile(s *models.BotSession, photoToken *string) (*models.Use
 		in.TelegramID = &maxID
 		in.MaxID = nil
 		in.TelegramUsername = s.MessengerUsername
+	} else {
+		in.MaxContact = s.DraftContact
 	}
 	if photoToken != nil {
 		if b.channel() == "telegram" {
@@ -742,7 +760,7 @@ func (b *Bot) beginFilter(s *models.BotSession) error {
 	if _, err := b.appUser(s); err != nil {
 		s.Step = stepName
 		_ = b.saveSession(s)
-		return b.send(s.ExternalID, "Чтобы начать знакомства, нужно заполнить анкету.\n\n1/8 · Как тебя зовут?", nil)
+		return b.send(s.ExternalID, "Чтобы начать знакомства, нужно заполнить анкету.\n\n"+b.onboardingPrompt(1, "Как тебя зовут?"), nil)
 	}
 	s.Step = stepFilterMode
 	if err := b.saveSession(s); err != nil {
@@ -785,6 +803,7 @@ func clearDraft(s *models.BotSession) {
 	s.DraftGender = ""
 	s.DraftSearchGender = ""
 	s.DraftBio = ""
+	s.DraftContact = ""
 	s.DraftUniversityID = nil
 	s.DraftSearchMode = ""
 	s.DraftPreferred = ""
@@ -795,7 +814,7 @@ func (b *Bot) showOwn(s *models.BotSession) error {
 	if err != nil {
 		s.Step = stepName
 		_ = b.saveSession(s)
-		return b.send(s.ExternalID, "Чтобы начать знакомства, нужно заполнить анкету.\n\n1/8 · Как тебя зовут?", nil)
+		return b.send(s.ExternalID, "Чтобы начать знакомства, нужно заполнить анкету.\n\n"+b.onboardingPrompt(1, "Как тебя зовут?"), nil)
 	}
 	s.Step = stepMenu
 	_ = b.saveSession(s)
@@ -807,12 +826,15 @@ func (b *Bot) showNext(s *models.BotSession) error {
 	if err != nil {
 		s.Step = stepName
 		_ = b.saveSession(s)
-		return b.send(s.ExternalID, "Чтобы начать знакомства, нужно заполнить анкету.\n\n1/8 · Как тебя зовут?", nil)
+		return b.send(s.ExternalID, "Чтобы начать знакомства, нужно заполнить анкету.\n\n"+b.onboardingPrompt(1, "Как тебя зовут?"), nil)
 	}
 	if err := b.leaveWrite(s); err != nil {
 		return err
 	}
 	next, err := crud.GetNextProfile(b.DB, user.ID)
+	if errors.Is(err, crud.ErrContactRequired) {
+		return b.handleContact(s, "edit")
+	}
 	if errors.Is(err, crud.ErrProfilePaused) {
 		return b.pausedMenu(s.ExternalID)
 	}
@@ -837,7 +859,11 @@ func (b *Bot) showNext(s *models.BotSession) error {
 
 func (b *Bot) appUser(s *models.BotSession) (*models.User, error) {
 	if s.UserID != nil {
-		return crud.GetUser(b.DB, *s.UserID)
+		user, err := crud.GetUser(b.DB, *s.UserID)
+		if err == nil && user.Platform() != b.channel() {
+			return nil, crud.ErrNotFound
+		}
+		return user, err
 	}
 	user, err := b.lookupUser(s.ExternalID)
 	if err != nil {

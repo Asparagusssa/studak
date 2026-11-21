@@ -23,6 +23,9 @@ func (b *Bot) showIncoming(s *models.BotSession) error {
 	}
 
 	from, err := crud.NextIncomingLike(b.DB, user.ID)
+	if errors.Is(err, crud.ErrContactRequired) {
+		return b.handleContact(s, "edit")
+	}
 	if errors.Is(err, crud.ErrProfilePaused) {
 		return b.pausedMenu(s.ExternalID)
 	}
@@ -61,6 +64,9 @@ func (b *Bot) react(s *models.BotSession, rawID string, like, inbox bool) error 
 		return err
 	}
 	res, err := crud.ReactOnce(b.DB, me.ID, peerID, like, inbox)
+	if errors.Is(err, crud.ErrContactRequired) {
+		return b.handleContact(s, "edit")
+	}
 	if errors.Is(err, crud.ErrProfilePaused) {
 		return b.pausedMenu(s.ExternalID)
 	}
@@ -85,8 +91,8 @@ func (b *Bot) react(s *models.BotSession, rawID string, like, inbox bool) error 
 		if b.canNotify(peer) {
 			// Delivery may be unavailable if the recipient stopped the bot.
 			// The match can still be reopened from the saved list.
-			client, id, channel := b.destination(peer)
-			_ = b.peerEngine(channel, client).sendMatch(id, me)
+			_, id, _ := b.destination(peer)
+			_ = b.sendMatch(id, me)
 		}
 		return b.sendMatch(s.ExternalID, peer)
 	}
@@ -129,6 +135,9 @@ func (b *Bot) showMatches(s *models.BotSession, offset int) error {
 		return err
 	}
 	users, err := crud.ListMatches(b.DB, me.ID, offset, pageSize+1)
+	if errors.Is(err, crud.ErrContactRequired) {
+		return b.handleContact(s, "edit")
+	}
 	if err != nil {
 		return err
 	}
@@ -163,6 +172,9 @@ func (b *Bot) showMatches(s *models.BotSession, offset int) error {
 
 func (b *Bot) showMatch(s *models.BotSession, raw string) error {
 	_, peer, err := b.findMatch(s, raw)
+	if errors.Is(err, crud.ErrContactRequired) {
+		return b.handleContact(s, "edit")
+	}
 	if errors.Is(err, crud.ErrNotFound) {
 		return b.matchGone(s)
 	}

@@ -6,11 +6,12 @@ import (
 )
 
 var (
-	ErrNotFound      = errors.New("not found")
-	ErrNoProfiles    = errors.New("no more profiles")
-	ErrInvalidInput  = errors.New("invalid input")
-	ErrAlreadyExists = errors.New("already exists")
-	ErrProfilePaused = errors.New("profile is paused")
+	ErrNotFound        = errors.New("not found")
+	ErrNoProfiles      = errors.New("no more profiles")
+	ErrInvalidInput    = errors.New("invalid input")
+	ErrAlreadyExists   = errors.New("already exists")
+	ErrProfilePaused   = errors.New("profile is paused")
+	ErrContactRequired = errors.New("contact is required")
 )
 
 func invalid(format string, args ...any) error {

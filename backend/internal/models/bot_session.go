@@ -16,6 +16,7 @@ type BotSession struct {
 	DraftAge          int    `json:"draft_age"`
 	DraftGender       string `gorm:"size:16" json:"draft_gender"`
 	DraftBio          string `gorm:"size:1000" json:"draft_bio"`
+	DraftContact      string `gorm:"size:512;not null;default:''" json:"-"`
 	DraftUniversityID *uint  `json:"draft_university_id,omitempty"`
 	DraftSearchGender string `gorm:"size:16;not null" json:"-"`
 	DraftSearchMode   string `gorm:"size:16" json:"draft_search_mode"`

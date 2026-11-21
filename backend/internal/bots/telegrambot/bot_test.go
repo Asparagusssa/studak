@@ -65,7 +65,7 @@ func testDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-func TestTelegramSameFlowAndCrossPlatformContacts(t *testing.T) {
+func TestTelegramFlowAndPlatformIsolation(t *testing.T) {
 	db := testDB(t)
 	must := func(err error) {
 		t.Helper()
@@ -98,12 +98,10 @@ func TestTelegramSameFlowAndCrossPlatformContacts(t *testing.T) {
 	tg.Client.BaseURL, tg.Client.HTTP = tgAPI.URL, tgAPI.Client()
 	max := maxbot.New(db, "max-fake", "max-secret")
 	max.Client.BaseURL, max.Client.HTTP = maxAPI.URL, maxAPI.Client()
-	peers := map[string]maxbot.Messenger{"telegram": tg.Client, "max": max.Client}
-	tg.Engine.Peers, max.Peers = peers, peers
 
 	// The same numeric messenger ID is intentionally used on both platforms.
 	maxID := int64(101)
-	maxUser, err := crud.CreateUser(db, crud.CreateUserInput{MaxID: &maxID, Name: "Борис", Age: 22, Gender: "male", MaxProfileURL: "https://max.ru/u/max101"})
+	maxUser, err := crud.CreateUser(db, crud.CreateUserInput{MaxID: &maxID, Name: "Борис", Age: 22, Gender: "male", MaxContact: "https://max.ru/u/max101"})
 	must(err)
 	seq := 0
 	event := func(value map[string]any, secret string) int {
@@ -166,41 +164,55 @@ func TestTelegramSameFlowAndCrossPlatformContacts(t *testing.T) {
 		t.Fatal("Telegram onboarding does not use the shared controls")
 	}
 
+	if _, err := crud.GetNextProfile(db, user.ID); err != crud.ErrNoProfiles {
+		t.Fatalf("Telegram saw a MAX profile: %v", err)
+	}
+	if _, err := crud.GetNextProfile(db, maxUser.ID); err != crud.ErrNoProfiles {
+		t.Fatalf("MAX saw a Telegram profile: %v", err)
+	}
 	must(max.HandleUpdate(maxbot.Update{UpdateType: "bot_started", User: &maxbot.User{UserID: 101}}))
 	must(max.HandleUpdate(maxbot.Update{UpdateType: "message_callback", Callback: &maxbot.Callback{CallbackID: "max-like", User: maxbot.User{UserID: 101}, Payload: fmt.Sprintf("like:%d", user.ID)}}))
-	callback("menu:incoming")
+	mu.Lock()
+	before := len(maxSent)
+	mu.Unlock()
 	callback(fmt.Sprintf("like_back:%d", maxUser.ID))
-	if _, err := crud.MatchedUser(db, user.ID, maxUser.ID); err != nil {
-		t.Fatal(err)
-	}
-	callback(fmt.Sprintf("write:%d", maxUser.ID))
-	message("Привет из Telegram")
 	mu.Lock()
-	mx := strings.Join(maxSent, "\n")
+	after := len(maxSent)
 	mu.Unlock()
-	if strings.Contains(mx, "Привет из Telegram") || !strings.Contains(mx, "https://t.me/anya_test") {
-		t.Fatalf("MAX should receive Telegram contact, not relayed text: %s", mx)
+	if before != after {
+		t.Fatal("Telegram callback sent a notification to MAX")
 	}
-	must(max.HandleUpdate(maxbot.Update{UpdateType: "message_callback", Callback: &maxbot.Callback{CallbackID: "max-write", User: maxbot.User{UserID: 101}, Payload: fmt.Sprintf("write:%d", user.ID)}}))
-	must(max.HandleUpdate(maxbot.Update{UpdateType: "message_created", Message: &maxbot.Message{Sender: maxbot.User{UserID: 101}, Recipient: maxbot.Recipient{ChatType: "dialog"}, Body: maxbot.Body{Mid: "reply-from-max", Text: "Привет из MAX"}}}))
+	if _, err := crud.MatchedUser(db, user.ID, maxUser.ID); err != crud.ErrNotFound {
+		t.Fatalf("cross-platform callback formed a match: %v", err)
+	}
+	if _, err := crud.SetLike(db, user.ID, maxUser.ID, true); err != crud.ErrNotFound {
+		t.Fatalf("REST reaction bypassed platform boundary: %v", err)
+	}
+	secondID := int64(202)
+	peer, err := crud.CreateUser(db, crud.CreateUserInput{TelegramID: &secondID, Name: "Саша", Age: 21, Gender: "male", TelegramUsername: "sasha_test", TelegramPhotoID: "native-tg-photo"})
+	must(err)
+	callback("menu:feed")
 	mu.Lock()
-	tgMessages := strings.Join(tgSent, "\n")
+	latest := strings.Join(tgSent, "\n")
 	mu.Unlock()
-	if strings.Contains(tgMessages, "Привет из MAX") || !strings.Contains(tgMessages, "https://max.ru/u/max101") {
-		t.Fatal("Telegram should receive MAX contact, not relayed text")
+	if !strings.Contains(latest, `"photo":"native-tg-photo"`) {
+		t.Fatal("native Telegram photo not shown")
 	}
-
+	_, err = crud.SetLike(db, user.ID, peer.ID, true)
+	must(err)
+	_, err = crud.SetLike(db, peer.ID, user.ID, true)
+	must(err)
 	callback("privacy:pause")
 	user, err = crud.GetUserByTelegramID(db, 101)
 	must(err)
 	if !user.Paused {
-		t.Fatal("Telegram pause not stored in shared database")
+		t.Fatal("Telegram pause not stored")
 	}
 	callback("privacy:resume")
-	callback(fmt.Sprintf("more:%d", maxUser.ID))
-	callback(fmt.Sprintf("privacy:block:%d", maxUser.ID))
-	if _, err := crud.MatchedUser(db, maxUser.ID, user.ID); err != crud.ErrNotFound {
-		t.Fatalf("cross-platform block failed: %v", err)
+	callback(fmt.Sprintf("block:%d", peer.ID))
+	callback(fmt.Sprintf("privacy:block:%d", peer.ID))
+	if _, err := crud.MatchedUser(db, peer.ID, user.ID); err != crud.ErrNotFound {
+		t.Fatalf("same-platform block failed: %v", err)
 	}
 	callback("privacy:delete")
 	var session models.BotSession

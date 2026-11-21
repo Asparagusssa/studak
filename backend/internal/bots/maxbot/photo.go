@@ -23,7 +23,14 @@ func (b *Bot) askPhoto(s *models.BotSession, intro string) error {
 			{CallbackButton("Назад к анкете", "menu:profile")},
 		})
 	}
-	return b.send(s.ExternalID, withIntro(intro, "8/8 · Добавь фото для анкеты. Пришли одно изображение через галерею — его увидят другие участники в боте. Фото обязательно для публикации."), nil)
+	step := 8
+	if b.channel() == channelMax {
+		if _, valid := models.NormalizeMaxContact(s.DraftContact); !valid {
+			return b.beginRegistrationContact(s, intro)
+		}
+		step = 9
+	}
+	return b.send(s.ExternalID, withIntro(intro, b.onboardingPrompt(step, "Добавь фото для анкеты. Пришли одно изображение через галерею — его увидят другие участники в боте. Фото обязательно для публикации.")), nil)
 }
 
 func (b *Bot) updatePhoto(s *models.BotSession, token string) error {
@@ -53,9 +60,9 @@ func (b *Bot) sendOwn(s *models.BotSession, user *models.User, intro string) err
 		{CallbackButton("📷 Фото", "photo:edit"), CallbackButton("Изменить анкету", "menu:reset")},
 	}
 	if b.channel() == channelMax {
-		rows = append(rows, []Button{CallbackButton("Контакт MAX", "contact:edit")})
-		if user.MaxProfileURL != "" {
-			intro += "\nТвой контакт MAX: " + user.MaxProfileURL
+		rows = append(rows, []Button{CallbackButton("Контакт для связи", "contact:edit")})
+		if user.MaxContact != "" {
+			intro += "\nТвой контакт для связи: " + user.MaxContact
 		}
 	} else if user.TelegramUsername != "" {
 		intro += "\nТвой контакт Telegram: @" + user.TelegramUsername

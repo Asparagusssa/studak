@@ -70,17 +70,6 @@ func Run() error {
 	if cfg.TelegramToken != "" {
 		telegramBot = telegrambot.New(db, cfg.TelegramToken, cfg.TelegramSecret)
 	}
-	transports := map[string]maxbot.Messenger{}
-	if maxBot != nil {
-		transports["max"] = maxBot.Client
-	}
-	if telegramBot != nil {
-		transports["telegram"] = telegramBot.Client
-		telegramBot.Engine.Peers = transports
-	}
-	if maxBot != nil {
-		maxBot.Peers = transports
-	}
 	router := api.NewRouter(db, api.Config{
 		AllowedOrigins: cfg.AllowedOrigins,
 		APIToken:       cfg.APIToken,

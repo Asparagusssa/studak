@@ -172,6 +172,9 @@ func (b *Bot) askBlock(s *models.BotSession, raw string) error {
 	if err != nil {
 		return err
 	}
+	if peer.Platform() != b.channel() {
+		return b.resume(s, staleButtonText)
+	}
 	s.Step, s.PeerUserID = stepBlock, &peer.ID
 	if err := b.saveSession(s); err != nil {
 		return err

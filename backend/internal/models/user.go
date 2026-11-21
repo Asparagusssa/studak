@@ -17,7 +17,7 @@ type User struct {
 	TelegramPhotoID  string `gorm:"type:text;not null" json:"-"`
 	MaxPhotoToken    string `gorm:"type:text;not null" json:"-"`
 	TelegramUsername string `gorm:"size:64;not null;default:''" json:"-"`
-	MaxProfileURL    string `gorm:"size:512;not null;default:''" json:"-"`
+	MaxContact       string `gorm:"size:512;not null;default:''" json:"-"`
 
 	MyUniversityID *uint       `gorm:"index" json:"my_university_id"`
 	MyUniversity   *University `gorm:"constraint:OnUpdate:CASCADE,OnDelete:SET NULL" json:"my_university,omitempty"`

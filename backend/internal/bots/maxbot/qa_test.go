@@ -108,7 +108,7 @@ func TestGroupCallbackMustNotChangeProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := int64(81)
-	_, err = crud.CreateUser(db, crud.CreateUserInput{Name: "A", Age: 21, MaxID: &id})
+	_, err = crud.CreateUser(db, crud.CreateUserInput{MaxContact: "+79991234567", Name: "A", Age: 21, MaxID: &id})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,6 +2,7 @@ package maxbot
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -50,26 +51,46 @@ func (b *Bot) rememberTelegramUsername(update Update) error {
 		Update("telegram_username", username).Error
 }
 
+func (b *Bot) onboardingPrompt(step int, text string) string {
+	total := 8
+	if b.channel() == channelMax {
+		total = 9
+	}
+	return fmt.Sprintf("%d/%d · %s", step, total, text)
+}
+
 func (b *Bot) contactDetails(peer *models.User) (text, label, link string) {
-	hasMax := peer.MaxID != nil && *peer.MaxID > 0 && peer.MaxProfileURL != "" && models.IsValidMaxProfileURL(peer.MaxProfileURL)
-	if b.channel() == channelMax && hasMax {
-		return "Профиль MAX: " + peer.MaxProfileURL, "Открыть MAX", peer.MaxProfileURL
+	if peer.Platform() != b.channel() {
+		return "Контакт этой анкеты недоступен.", "", ""
 	}
-	if peer.TelegramID != nil && *peer.TelegramID > 0 {
-		if peer.TelegramUsername != "" && models.IsValidTelegramUsername(peer.TelegramUsername) {
-			return "Telegram: @" + peer.TelegramUsername, "Открыть Telegram", "https://t.me/" + peer.TelegramUsername
+	if b.channel() == channelMax {
+		contact, valid := models.NormalizeMaxContact(peer.MaxContact)
+		if !valid {
+			return "Пользователь пока не указал контакт для связи.", "", ""
 		}
-		if b.channel() == "telegram" {
-			return "Username в Telegram не указан. Можно открыть профиль по кнопке ниже.", "Открыть Telegram", "tg://user?id=" + strconv.FormatInt(*peer.TelegramID, 10)
+		if strings.HasPrefix(contact, "+") {
+			return "Телефон: " + contact, "", ""
 		}
+		if strings.HasPrefix(contact, "https://t.me/") {
+			return "Telegram: " + contact, "Открыть Telegram", contact
+		}
+		return "Профиль MAX: " + contact, "Открыть MAX", contact
 	}
-	if hasMax {
-		return "Профиль MAX: " + peer.MaxProfileURL, "Открыть MAX", peer.MaxProfileURL
+	if peer.TelegramUsername != "" && models.IsValidTelegramUsername(peer.TelegramUsername) {
+		return "Telegram: @" + peer.TelegramUsername, "Открыть Telegram", "https://t.me/" + peer.TelegramUsername
 	}
-	if peer.MaxID != nil {
-		return "Пользователь пока не добавил личную ссылку MAX.", "", ""
+	return "Username в Telegram не указан. Можно открыть профиль по кнопке ниже.", "Открыть Telegram", "tg://user?id=" + strconv.FormatInt(*peer.TelegramID, 10)
+}
+
+func (b *Bot) beginRegistrationContact(s *models.BotSession, intro string) error {
+	if b.channel() != channelMax {
+		return b.beginPhoto(s, stepPhoto)
 	}
-	return "Контакт пока недоступен: пользователь не указал username или ссылку на профиль.", "", ""
+	s.Step, s.PeerUserID = stepRegistrationContact, nil
+	if err := b.saveSession(s); err != nil {
+		return err
+	}
+	return b.askMaxContact(s, intro)
 }
 
 func (b *Bot) handleContact(s *models.BotSession, action string) error {
@@ -91,32 +112,45 @@ func (b *Bot) handleContact(s *models.BotSession, action string) error {
 		return b.askMaxContact(s, "")
 	case "remove":
 		if s.Step == stepContact {
-			return b.updateMaxContact(s, "")
+			return b.askMaxContact(s, "Контакт обязателен. Его можно заменить, но нельзя убрать.")
 		}
 	}
 	return b.resume(s, staleButtonText)
 }
 
 func (b *Bot) askMaxContact(s *models.BotSession, intro string) error {
-	return b.send(s.ExternalID, withIntro(intro, "Пришли личную ссылку на свой профиль MAX вида https://max.ru/u/…\n\nСкопируй её в профиле MAX через «Поделиться». Студак покажет ссылку только после взаимного лайка. При замене ссылки ранее полученные ссылки у других пользователей сохранятся."), [][]Button{
-		{CallbackButton("Убрать ссылку", "contact:remove"), CallbackButton("Назад к анкете", "menu:profile")},
-	})
+	text := "Укажи контакт для связи: номер с кодом страны, ссылку на Telegram или личную ссылку MAX.\n\nНапример: +79991234567, https://t.me/username или https://max.ru/u/…\n\nКонтакт обязателен и будет доступен собеседнику только после взаимного лайка."
+	var rows [][]Button
+	if s.Step == stepRegistrationContact {
+		text = b.onboardingPrompt(8, text)
+	} else {
+		rows = [][]Button{{CallbackButton("Назад к анкете", "menu:profile")}}
+	}
+	return b.send(s.ExternalID, withIntro(intro, text), rows)
 }
 
 func (b *Bot) saveMaxContact(s *models.BotSession, body Body) error {
-	link := strings.TrimSpace(body.Text)
-	if b.channel() != channelMax || len(body.Attachments) != 0 || link == "" || !models.IsValidMaxProfileURL(link) {
-		return b.askMaxContact(s, "Нужна личная HTTPS-ссылка MAX, а не ссылка на канал или группу.")
+	contact, valid := models.NormalizeMaxContact(body.Text)
+	if b.channel() != channelMax || len(body.Attachments) != 0 || !valid {
+		return b.askMaxContact(s, "Не получилось распознать контакт. Пришли один номер телефона или личную ссылку на Telegram/MAX.")
 	}
-	return b.updateMaxContact(s, link)
+	if s.Step == stepRegistrationContact {
+		s.DraftContact = contact
+		return b.beginPhoto(s, stepPhoto)
+	}
+	return b.updateMaxContact(s, contact)
 }
 
-func (b *Bot) updateMaxContact(s *models.BotSession, link string) error {
+func (b *Bot) updateMaxContact(s *models.BotSession, contact string) error {
+	contact, valid := models.NormalizeMaxContact(contact)
+	if !valid {
+		return b.askMaxContact(s, "Контакт обязателен. Его можно заменить, но нельзя убрать.")
+	}
 	user, err := b.appUser(s)
 	if err != nil {
 		return err
 	}
-	user, err = crud.UpdateUser(b.DB, user.ID, crud.UpdateUserInput{MaxProfileURL: &link})
+	user, err = crud.UpdateUser(b.DB, user.ID, crud.UpdateUserInput{MaxContact: &contact})
 	if err != nil {
 		return err
 	}
@@ -124,9 +158,5 @@ func (b *Bot) updateMaxContact(s *models.BotSession, link string) error {
 	if err := b.saveSession(s); err != nil {
 		return err
 	}
-	intro := "Контакт MAX сохранён. Ссылка будет доступна только после взаимного лайка."
-	if link == "" {
-		intro = "Контакт MAX убран из Студака."
-	}
-	return b.sendOwn(s, user, intro)
+	return b.sendOwn(s, user, "Контакт сохранён. Он будет доступен только после взаимного лайка.")
 }

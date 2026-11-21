@@ -28,7 +28,7 @@ func TestProfilePrivacyInMax(t *testing.T) {
 	}
 	create := func(name, gender, search string, id int64) *models.User {
 		t.Helper()
-		user, err := crud.CreateUser(db, crud.CreateUserInput{Name: name, Age: 22, Gender: gender, SearchGender: search, MaxID: &id})
+		user, err := crud.CreateUser(db, crud.CreateUserInput{MaxContact: "+79991234567", Name: name, Age: 22, Gender: gender, SearchGender: search, MaxID: &id})
 		must(err)
 		return user
 	}

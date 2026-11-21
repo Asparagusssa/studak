@@ -24,7 +24,7 @@ func TestMaxContactInputAndDisclosure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	peer, err := crud.CreateUser(db, crud.CreateUserInput{Name: "Борис", Age: 21, MaxID: &second})
+	peer, err := crud.CreateUser(db, crud.CreateUserInput{Name: "Борис", Age: 21, MaxID: &second, MaxContact: "+79991234568"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestMaxContactInputAndDisclosure(t *testing.T) {
 		must(bot.onMessage(first, Body{Text: link}))
 		user, err := crud.GetUserByMaxID(db, first)
 		must(err)
-		if user.MaxProfileURL != "" {
+		if user.MaxContact != "" {
 			t.Fatalf("invalid link saved: %q", link)
 		}
 	}
@@ -62,12 +62,12 @@ func TestMaxContactInputAndDisclosure(t *testing.T) {
 	must(bot.onMessage(first, Body{Text: link}))
 	user, err := crud.GetUserByMaxID(db, first)
 	must(err)
-	if user.MaxProfileURL != link {
+	if user.MaxContact != link {
 		t.Fatal("MAX contact was not saved")
 	}
 	public, err := json.Marshal(user)
 	must(err)
-	if strings.Contains(string(public), link) || strings.Contains(string(public), "max_profile_url") {
+	if strings.Contains(string(public), link) || strings.Contains(string(public), "max_contact") {
 		t.Fatal("public user JSON leaks private MAX contact")
 	}
 	must(bot.onCallback(second, fmt.Sprintf("write:%d", me.ID)))
@@ -84,8 +84,20 @@ func TestMaxContactInputAndDisclosure(t *testing.T) {
 	}
 	must(bot.onCallback(first, "contact:edit"))
 	must(bot.onCallback(first, "contact:remove"))
+	user, err = crud.GetUserByMaxID(db, first)
+	must(err)
+	if user.MaxContact != link {
+		t.Fatal("stale remove action erased mandatory contact")
+	}
+	must(bot.onMessage(first, Body{Text: "8 (999) 123-45-67"}))
 	must(bot.onCallback(second, fmt.Sprintf("match:%d", me.ID)))
-	if strings.Contains(last("502"), link) || !strings.Contains(last("502"), "пока не добавил") {
-		t.Fatal("removed MAX contact is still supplied to future requests")
+	if !strings.Contains(last("502"), "+79991234567") {
+		t.Fatal("matched user did not receive phone contact")
+	}
+	must(bot.onCallback(first, "contact:edit"))
+	must(bot.onMessage(first, Body{Text: "https://t.me/alice_test"}))
+	must(bot.onCallback(second, fmt.Sprintf("match:%d", me.ID)))
+	if !strings.Contains(last("502"), "https://t.me/alice_test") {
+		t.Fatal("matched user did not receive Telegram contact")
 	}
 }

@@ -30,7 +30,7 @@ type CreateUserInput struct {
 	MaxPhotoToken          string `json:"-"`
 	TelegramPhotoID        string `json:"-"`
 	TelegramUsername       string `json:"-"`
-	MaxProfileURL          string `json:"-"`
+	MaxContact             string `json:"-"`
 	MyUniversityID         *uint  `json:"my_university_id"`
 	SearchMode             string `json:"search_mode"`
 	SearchGender           string `json:"-"`
@@ -48,7 +48,7 @@ type UpdateUserInput struct {
 	MaxPhotoToken          *string `json:"-"`
 	TelegramPhotoID        *string `json:"-"`
 	TelegramUsername       *string `json:"-"`
-	MaxProfileURL          *string `json:"-"`
+	MaxContact             *string `json:"-"`
 	MyUniversityID         *uint   `json:"my_university_id"`
 	SearchMode             *string `json:"search_mode"`
 	SearchGender           *string `json:"-"`
@@ -68,7 +68,7 @@ func CreateUser(db *gorm.DB, in CreateUserInput) (*models.User, error) {
 		MaxPhotoToken:    strings.TrimSpace(in.MaxPhotoToken),
 		TelegramPhotoID:  strings.TrimSpace(in.TelegramPhotoID),
 		TelegramUsername: strings.TrimSpace(in.TelegramUsername),
-		MaxProfileURL:    strings.TrimSpace(in.MaxProfileURL),
+		MaxContact:       strings.TrimSpace(in.MaxContact),
 		MyUniversityID:   in.MyUniversityID,
 		SearchMode:       strings.TrimSpace(in.SearchMode),
 		SearchGender:     strings.TrimSpace(in.SearchGender),
@@ -144,8 +144,8 @@ func UpdateUser(db *gorm.DB, id uint, in UpdateUserInput) (*models.User, error) 
 		if in.TelegramUsername != nil {
 			user.TelegramUsername = strings.TrimSpace(*in.TelegramUsername)
 		}
-		if in.MaxProfileURL != nil {
-			user.MaxProfileURL = strings.TrimSpace(*in.MaxProfileURL)
+		if in.MaxContact != nil {
+			user.MaxContact = strings.TrimSpace(*in.MaxContact)
 		}
 		if in.PhotoURL != nil {
 			user.PhotoURL = strings.TrimSpace(*in.PhotoURL)
@@ -237,8 +237,12 @@ func validateUser(u *models.User) error {
 	if !models.IsValidTelegramUsername(u.TelegramUsername) {
 		return invalid("invalid Telegram username")
 	}
-	if !models.IsValidMaxProfileURL(u.MaxProfileURL) {
-		return invalid("MAX profile link must be an HTTPS max.ru/u/ link")
+	if u.MaxContact != "" {
+		contact, valid := models.NormalizeMaxContact(u.MaxContact)
+		if !valid {
+			return invalid("MAX contact must be a phone number, Telegram link or MAX profile link")
+		}
+		u.MaxContact = contact
 	}
 	if u.TelegramID != nil && *u.TelegramID <= 0 {
 		return invalid("telegram_id must be a positive integer")
