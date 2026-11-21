@@ -6,6 +6,8 @@ import (
 )
 
 var (
+	ErrBanned          = errors.New("account is banned")
+	ErrNotLaunched     = errors.New("dating has not launched")
 	ErrNotFound        = errors.New("not found")
 	ErrNoProfiles      = errors.New("no more profiles")
 	ErrInvalidInput    = errors.New("invalid input")

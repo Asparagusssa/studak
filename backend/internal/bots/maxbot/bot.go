@@ -170,6 +170,9 @@ const menuText = "Что хочешь сделать? ✨"
 const staleButtonText = "Это кнопка из прошлого шага. Вот где мы остановились:"
 
 func (b *Bot) onStart(maxID int64, displayName string) error {
+	if blocked, err := b.accessBlocked(maxID); blocked || err != nil {
+		return err
+	}
 	s, err := b.session(maxID)
 	if err != nil {
 		return err
@@ -215,10 +218,19 @@ func (b *Bot) onMessage(maxID int64, body Body) error {
 		return err
 	}
 	lower := strings.ToLower(text)
+	if lower == "/id" {
+		return b.send(maxID, fmt.Sprintf("Твой ID в %s: %d", b.channel(), maxID), nil)
+	}
+	if blocked, err := b.accessBlocked(maxID); blocked || err != nil {
+		return err
+	}
+	if lower == "/admin" {
+		return b.adminHome(maxID, "")
+	}
 	if lower == "/cancel" && s.Step == stepWrite {
 		return b.cancelWrite(s)
 	}
-	if lower == "/start" || lower == "/menu" || lower == "старт" || lower == "начать" {
+	if lower == "/start" || lower == "/menu" || lower == "меню" || lower == "☰ меню" || lower == "старт" || lower == "начать" {
 		name := ""
 		if user, err := b.lookupUser(maxID); err == nil {
 			name = user.Name
@@ -333,7 +345,13 @@ func (b *Bot) onCallback(maxID int64, payload string) error {
 	if err != nil {
 		return err
 	}
+	if blocked, err := b.accessBlocked(maxID); blocked || err != nil {
+		return err
+	}
 	kind, arg, _ := strings.Cut(payload, ":")
+	if kind == "admin" {
+		return b.onAdmin(s, arg)
+	}
 	switch kind {
 	case "gender":
 		if s.Step != stepGender {
@@ -635,6 +653,14 @@ func (b *Bot) offerUniversities(s *models.BotSession, query string) error {
 		}
 		return b.send(s.ExternalID, text, nil)
 	}
+	ids := make([]uint, 0, len(unis))
+	for _, u := range unis {
+		ids = append(ids, u.ID)
+	}
+	counts, err := crud.UniversityRegistrations(b.DB, b.channel(), ids)
+	if err != nil {
+		return err
+	}
 	prefix := "uni"
 	if preferred {
 		prefix = "pref"
@@ -648,12 +674,12 @@ func (b *Bot) offerUniversities(s *models.BotSession, query string) error {
 		if len([]rune(label)) > 32 {
 			label = string([]rune(label)[:31]) + "…"
 		}
-		rows = append(rows, []Button{CallbackButton(label, fmt.Sprintf("%s:%d", prefix, u.ID))})
+		rows = append(rows, []Button{CallbackButton(fmt.Sprintf("%s · %d чел.", label, counts[u.ID]), fmt.Sprintf("%s:%d", prefix, u.ID))})
 	}
 	if preferred {
 		rows = append(rows, preferredKeyboard()...)
 	}
-	return b.send(s.ExternalID, "Выбери учебное заведение из подходящих и похожих вариантов:", rows)
+	return b.send(s.ExternalID, "Выбери учебное заведение из подходящих и похожих вариантов.\nРядом — число зарегистрированных в этом мессенджере, включая анкеты на паузе. Заблокированные не учитываются. Размер ленты зависит также от возраста, пола и фильтров:", rows)
 }
 
 func (b *Bot) finishOnboarding(s *models.BotSession, photoToken *string) error {
@@ -822,6 +848,9 @@ func (b *Bot) showOwn(s *models.BotSession) error {
 }
 
 func (b *Bot) showNext(s *models.BotSession) error {
+	if blocked, err := b.datingBlocked(s.ExternalID); blocked || err != nil {
+		return err
+	}
 	user, err := b.appUser(s)
 	if err != nil {
 		s.Step = stepName
@@ -832,6 +861,10 @@ func (b *Bot) showNext(s *models.BotSession) error {
 		return err
 	}
 	next, err := crud.GetNextProfile(b.DB, user.ID)
+	if errors.Is(err, crud.ErrNotLaunched) {
+		_, err = b.datingBlocked(s.ExternalID)
+		return err
+	}
 	if errors.Is(err, crud.ErrContactRequired) {
 		return b.handleContact(s, "edit")
 	}
@@ -908,6 +941,39 @@ func (b *Bot) saveSession(s *models.BotSession) error {
 }
 
 func (b *Bot) send(userID int64, text string, keyboard [][]Button) error {
+	mainMenu := false
+	for _, row := range keyboard {
+		for _, button := range row {
+			if button.Payload == "menu:profile" {
+				mainMenu = true
+			}
+		}
+	}
+	if mainMenu || strings.HasPrefix(text, "Привет! Это Студак") {
+		stats, err := crud.RegisteredUsers(b.DB)
+		if err != nil {
+			return err
+		}
+		count := stats.Max
+		platform := "MAX"
+		if b.channel() == "telegram" {
+			count = stats.Telegram
+			platform = "Telegram"
+		}
+		text += fmt.Sprintf("\n\nУже зарегистрировано: %d · в %s: %d", stats.Total, platform, count)
+	}
+	if mainMenu {
+		started, err := crud.DatingStarted(b.DB)
+		if err != nil {
+			return err
+		}
+		if !started && !strings.Contains(text, "готовится к запуску") {
+			text += "\nСейчас собираем анкеты. Знакомства откроются после запуска."
+		}
+		if b.isAdmin(userID) {
+			keyboard = append(keyboard, []Button{CallbackButton("Админка", "admin:home")})
+		}
+	}
 	if err := b.transport().SendContext(b.context(), userID, text, keyboard); err != nil {
 		logx.Error(fmt.Sprintf("MAX send to user %d failed", userID), err)
 		return err
@@ -925,7 +991,7 @@ func (b *Bot) context() context.Context {
 func menuKeyboard() [][]Button {
 	return [][]Button{
 		{CallbackButton("✨ Смотреть анкеты", "menu:feed")},
-		{CallbackButton("💌 Входящие лайки", "menu:incoming"), CallbackButton("Мои мэтчи", "matches:0")},
+		{CallbackButton("💌 Входящие лайки", "menu:incoming")},
 		{CallbackButton("Моя анкета", "menu:profile")},
 		{CallbackButton("Где искать", "menu:filter"), CallbackButton("Кого искать", "menu:who")},
 		{CallbackButton("⚙️ Настройки", "privacy:home")},

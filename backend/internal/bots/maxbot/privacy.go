@@ -119,7 +119,7 @@ func (b *Bot) sendPrivacy(s *models.BotSession, user *models.User, intro string)
 	status := "Анкета видна в поиске. На паузе новые знакомства остановятся, а существующие мэтчи и контакты останутся доступны."
 	if user.Paused {
 		action, target = "Вернуть в поиск", "privacy:resume"
-		status = "Анкета скрыта из поиска. Существующие мэтчи и контакты доступны."
+		status = "Анкета скрыта из поиска. Полученные контакты остались в переписке."
 	}
 	title := "Настройки"
 	if intro != "" {
@@ -135,7 +135,7 @@ func (b *Bot) sendPrivacy(s *models.BotSession, user *models.User, intro string)
 func (b *Bot) pausedMenu(maxID int64) error {
 	return b.send(maxID, "Анкета на паузе 🌙\nВерни её в поиск, чтобы снова смотреть новые анкеты и отвечать на лайки.", [][]Button{
 		{CallbackButton("Вернуть в поиск", "privacy:resume")},
-		{CallbackButton("Мои мэтчи", "matches:0"), CallbackButton("Настройки анкеты", "privacy:home")},
+		{CallbackButton("Настройки анкеты", "privacy:home")},
 	})
 }
 

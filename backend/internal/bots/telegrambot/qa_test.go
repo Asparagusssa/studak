@@ -155,6 +155,27 @@ func (q *tgQA) register(id int64, name, gender string) {
 	q.message(id, "", map[string]any{"photo": []map[string]any{{"file_id": "registration-photo", "width": 800, "height": 900}}})
 }
 
+func TestTelegramMenuCommandFromAnyStep(t *testing.T) {
+	q := newTGQA(t)
+	q.message(90, "/start", nil)
+	q.message(90, "Анна", nil)
+	q.message(90, "/menu", nil)
+	if s := q.state(90); s.Step != "age" || s.DraftName != "Анна" {
+		t.Fatalf("menu command changed an unfinished registration: %+v", s)
+	}
+	q.register(90, "Анна", "female")
+	for _, command := range []string{"/menu", "меню", "☰ Меню"} {
+		q.click(90, "photo:edit")
+		q.message(90, command, nil)
+		if q.state(90).Step != "menu" || len(q.last(90).Buttons) == 0 {
+			t.Fatalf("%q did not open the menu from photo editing", command)
+		}
+		if q.user(90).TelegramPhotoID != "registration-photo" {
+			t.Fatal("opening the menu changed the profile photo")
+		}
+	}
+}
+
 func TestTelegramRegistrationRequiresPhoto(t *testing.T) {
 	q := newTGQA(t)
 	q.message(91, "/start", nil)
@@ -264,14 +285,14 @@ func TestTelegramContactsRequireAMatchAndTrackUsernameChanges(t *testing.T) {
 	q.usernames[96] = "sasha_new"
 	q.message(96, "/start", nil)
 	q.click(95, fmt.Sprintf("match:%d", peer.ID))
-	if !hasLink(q.last(95), "https://t.me/sasha_new") || q.user(96).TelegramUsername != "sasha_new" {
-		t.Fatal("updated Telegram username was not refreshed")
+	if hasLink(q.last(95), "https://t.me/sasha_new") || q.user(96).TelegramUsername != "sasha_new" {
+		t.Fatal("updated Telegram username was not refreshed or stale history disclosed it")
 	}
 	q.usernames[96] = ""
 	q.message(96, "/start", nil)
 	q.click(95, fmt.Sprintf("match:%d", peer.ID))
-	if q.user(96).TelegramUsername != "" || !hasLink(q.last(95), "tg://user?id=96") {
-		t.Fatal("removed username did not fall back to Telegram profile link")
+	if q.user(96).TelegramUsername != "" || hasLink(q.last(95), "tg://user?id=96") {
+		t.Fatal("removed username was not cleared or deleted history disclosed it")
 	}
 	q.click(95, fmt.Sprintf("block:%d", peer.ID))
 	q.click(95, fmt.Sprintf("privacy:block:%d", peer.ID))
@@ -304,9 +325,15 @@ func TestTelegramNativeLifecycle(t *testing.T) {
 	q.click(51, fmt.Sprintf("like:%d", b.ID))
 	q.click(52, "menu:incoming")
 	q.click(52, fmt.Sprintf("like_back:%d", a.ID))
-	if _, err := crud.MatchedUser(q.db, a.ID, b.ID); err != nil {
-		t.Fatal(err)
+	var pairCount int64
+	q.must(q.db.Model(&models.Like{}).Where("from_user_id IN ?", []uint{a.ID, b.ID}).Count(&pairCount).Error)
+	if pairCount != 0 {
+		t.Fatal("reciprocal likes remained after both notifications")
 	}
+	if q.count(51, "Симпатия взаимна") != 1 || q.count(52, "Симпатия взаимна") != 1 {
+		t.Fatal("missing mutuality messages")
+	}
+
 	q.click(51, fmt.Sprintf("write:%d", b.ID))
 	q.message(51, strings.Repeat("я", 1201), nil)
 	if q.state(51).Step == "write" {

@@ -91,13 +91,13 @@ func TestMaxContactInputAndDisclosure(t *testing.T) {
 	}
 	must(bot.onMessage(first, Body{Text: "8 (999) 123-45-67"}))
 	must(bot.onCallback(second, fmt.Sprintf("match:%d", me.ID)))
-	if !strings.Contains(last("502"), "+79991234567") {
-		t.Fatal("matched user did not receive phone contact")
+	if strings.Contains(last("502"), "+79991234567") {
+		t.Fatal("stale match button disclosed the updated phone")
 	}
 	must(bot.onCallback(first, "contact:edit"))
 	must(bot.onMessage(first, Body{Text: "https://t.me/alice_test"}))
 	must(bot.onCallback(second, fmt.Sprintf("match:%d", me.ID)))
-	if !strings.Contains(last("502"), "https://t.me/alice_test") {
-		t.Fatal("matched user did not receive Telegram contact")
+	if strings.Contains(last("502"), "https://t.me/alice_test") {
+		t.Fatal("stale match button disclosed the updated Telegram contact")
 	}
 }

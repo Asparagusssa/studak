@@ -232,8 +232,9 @@ func TestConcurrentReciprocalLikesAndBlockOnPostgres(t *testing.T) {
 	if newMatches != 1 {
 		t.Fatalf("expected one transition to a match, got %d", newMatches)
 	}
-	if _, err := crud.MatchedUser(db, me.ID, peer.ID); err != nil {
-		t.Fatal(err)
+	var pending int64
+	if err := db.Model(&models.Like{}).Where("is_mutual = ?", true).Count(&pending).Error; err != nil || pending != 2 {
+		t.Fatalf("pending delivery pair missing: %d / %v", pending, err)
 	}
 
 	// Blocking and a like on the same pair may arrive together.
@@ -242,7 +243,7 @@ func TestConcurrentReciprocalLikesAndBlockOnPostgres(t *testing.T) {
 	go func() { <-start; _, err := crud.SetLike(db, peer.ID, me.ID, true); errs <- err }()
 	close(start)
 	for range 2 {
-		if err := <-errs; err != nil && !errors.Is(err, crud.ErrNotFound) {
+		if err := <-errs; err != nil && !errors.Is(err, crud.ErrNotFound) && !errors.Is(err, crud.ErrAlreadyExists) {
 			t.Fatal(err)
 		}
 	}

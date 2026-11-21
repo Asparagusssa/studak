@@ -426,7 +426,10 @@ func testDB(path string) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := db.AutoMigrate(&models.University{}, &models.User{}, &models.Like{}, &models.BotSession{}, &models.MaxRelay{}, &models.UserBlock{}, &models.MaxWebhookEvent{}); err != nil {
+	if err := db.AutoMigrate(&models.ServiceState{}, &models.University{}, &models.User{}, &models.Like{}, &models.BotSession{}, &models.MaxRelay{}, &models.UserBlock{}, &models.MaxWebhookEvent{}); err != nil {
+		return nil, err
+	}
+	if err := db.Create(&models.ServiceState{ID: 1, Started: true}).Error; err != nil {
 		return nil, err
 	}
 	return db, nil

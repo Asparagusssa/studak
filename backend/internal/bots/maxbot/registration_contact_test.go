@@ -48,6 +48,12 @@ func TestMaxRegistrationRequiresContactBeforePhotoAndPublication(t *testing.T) {
 			if s.Step != stepRegistrationContact || !strings.Contains(lastBody(), "8/9") {
 				t.Fatal("registration did not ask for contact")
 			}
+			must(bot.onMessage(601, Body{Text: "/menu"}))
+			s, err = bot.session(601)
+			must(err)
+			if s.Step != stepRegistrationContact || s.DraftName != "Анна" || !strings.Contains(lastBody(), "8/9") {
+				t.Fatal("menu command changed the unfinished registration")
+			}
 			must(bot.onMessage(601, Body{Text: "пропустить"}))
 			token := "photo-before-contact"
 			must(bot.finishOnboarding(s, &token))
@@ -68,6 +74,18 @@ func TestMaxRegistrationRequiresContactBeforePhotoAndPublication(t *testing.T) {
 			must(err)
 			if user.MaxContact != contact || user.MaxPhotoToken != "anna-photo" || user.Platform() != "max" {
 				t.Fatalf("bad published profile: %+v", user)
+			}
+			must(bot.onCallback(601, "contact:edit"))
+			must(bot.onMessage(601, Body{Text: "/menu"}))
+			s, err = bot.session(601)
+			must(err)
+			if s.Step != stepMenu || !strings.Contains(lastBody(), "Моя анкета") {
+				t.Fatal("menu command did not leave contact editing")
+			}
+			user, err = crud.GetUserByMaxID(db, 601)
+			must(err)
+			if user.MaxContact != contact {
+				t.Fatal("menu command changed the saved contact")
 			}
 		})
 	}

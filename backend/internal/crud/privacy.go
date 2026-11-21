@@ -13,7 +13,7 @@ const pairBlock = "(blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND bl
 func lockUserPair(tx *gorm.DB, a, b uint) ([]models.User, error) {
 	var users []models.User
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Select("id", "paused", "telegram_id", "max_id", "max_contact").Where("id IN ?", []uint{a, b}).Order("id").Find(&users).Error; err != nil {
+		Where("id IN ?", []uint{a, b}).Order("id").Find(&users).Error; err != nil {
 		return nil, err
 	}
 	if len(users) != 2 {
@@ -73,7 +73,7 @@ func ListBlockedUsers(db *gorm.DB, actor uint, offset, limit int) ([]models.User
 }
 
 func SetProfilePaused(db *gorm.DB, userID uint, paused bool) error {
-	result := db.Model(&models.User{}).Where("id = ?", userID).Update("paused", paused)
+	result := db.Model(&models.User{}).Where("id = ? AND banned = ?", userID, false).Update("paused", paused)
 	if result.Error == nil && result.RowsAffected == 0 {
 		return ErrNotFound
 	}
@@ -96,6 +96,9 @@ func DeleteMessengerProfile(db *gorm.DB, userID uint, externalID int64, channel,
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ? AND "+column+" = ?", userID, externalID).First(&user).Error; err != nil {
 			return wrapNotFound(err)
+		}
+		if user.Banned {
+			return ErrBanned
 		}
 		confirmation := tx.Where("channel = ? AND external_id = ? AND step = ?", channel, externalID, confirmationStep).
 			Delete(&models.BotSession{})

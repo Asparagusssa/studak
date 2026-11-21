@@ -137,8 +137,8 @@ func TestIncomingLikesAndDirectContacts(t *testing.T) {
 		t.Fatalf("expected one match notice per recipient, got %v", got)
 	}
 	must(bot.onCallback(202, "matches:0"))
-	if !hasButton("202", fmt.Sprintf("match:%d", anna.ID)) || !hasButton("202", "https://max.ru/u/user101") {
-		t.Fatal("match and direct-contact actions are missing")
+	if hasButton("202", fmt.Sprintf("match:%d", anna.ID)) || !hasButton("202", "https://max.ru/u/user101") {
+		t.Fatal("saved match button remained or mutuality contact was not delivered")
 	}
 
 	click(202, "write", anna.ID)

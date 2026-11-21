@@ -53,8 +53,11 @@ func testDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = db.AutoMigrate(&models.University{}, &models.User{}, &models.Like{}, &models.BotSession{}, &models.MaxRelay{}, &models.MaxWebhookEvent{}, &models.UserBlock{})
+	err = db.AutoMigrate(&models.ServiceState{}, &models.University{}, &models.User{}, &models.Like{}, &models.BotSession{}, &models.MaxRelay{}, &models.MaxWebhookEvent{}, &models.UserBlock{})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ServiceState{ID: 1, Started: true}).Error; err != nil {
 		t.Fatal(err)
 	}
 	sql, _ := db.DB()

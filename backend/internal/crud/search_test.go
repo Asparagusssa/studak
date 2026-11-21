@@ -22,7 +22,10 @@ func feedDB(t *testing.T, now *time.Time) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&models.University{}, &models.User{}, &models.Like{}, &models.UserBlock{}); err != nil {
+	if err := db.AutoMigrate(&models.ServiceState{}, &models.University{}, &models.User{}, &models.Like{}, &models.UserBlock{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ServiceState{ID: 1, Started: true}).Error; err != nil {
 		t.Fatal(err)
 	}
 	pool, _ := db.DB()

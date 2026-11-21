@@ -129,6 +129,9 @@ func UpdateUser(db *gorm.DB, id uint, in UpdateUserInput) (*models.User, error) 
 			return wrapNotFound(err)
 		}
 
+		if user.Banned {
+			return ErrBanned
+		}
 		if in.Name != nil {
 			user.Name = strings.TrimSpace(*in.Name)
 		}

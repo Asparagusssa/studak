@@ -13,6 +13,7 @@ type User struct {
 	Gender           string `gorm:"size:16" json:"gender"`
 	Bio              string `gorm:"size:1000" json:"bio"`
 	PhotoURL         string `gorm:"size:512" json:"photo_url"`
+	Banned           bool   `gorm:"not null;default:false" json:"-"`
 	Paused           bool   `gorm:"not null" json:"-"`
 	TelegramPhotoID  string `gorm:"type:text;not null" json:"-"`
 	MaxPhotoToken    string `gorm:"type:text;not null" json:"-"`

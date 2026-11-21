@@ -21,6 +21,9 @@ func GetNextProfile(db *gorm.DB, userID uint) (*models.User, error) {
 }
 
 func getNextProfile(db *gorm.DB, userID uint, priorityFirst bool) (*models.User, error) {
+	if err := requireDatingStarted(db); err != nil {
+		return nil, err
+	}
 	me, err := profileViewer(db, userID)
 	if err != nil {
 		return nil, err
@@ -35,6 +38,7 @@ func getNextProfile(db *gorm.DB, userID uint, priorityFirst bool) (*models.User,
 	q := eligibleProfiles(excludeBlocked(db.Model(&models.User{}), me.ID), me).
 		Where("users.id <> ? AND users.paused = ?", me.ID, false).
 		Where("users.id NOT IN (?)", reacted).
+		Where(`NOT EXISTS (SELECT 1 FROM likes AS pending WHERE pending.from_user_id = users.id AND pending.to_user_id = ? AND pending.is_mutual = ?)`, me.ID, true).
 		Where("users.age BETWEEN ? AND ?", max(MinAge, me.Age-2), min(MaxAge, me.Age+2))
 
 	if me.SearchGender == models.SearchGenderFemale || me.SearchGender == models.SearchGenderMale {

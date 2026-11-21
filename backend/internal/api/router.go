@@ -240,6 +240,10 @@ func parseID(c *gin.Context, param string) (uint, bool) {
 
 func handleErr(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, crud.ErrBanned):
+		respondError(c, http.StatusForbidden, "account is banned")
+	case errors.Is(err, crud.ErrNotLaunched):
+		respondError(c, http.StatusConflict, "dating has not launched")
 	case errors.Is(err, crud.ErrInvalidInput):
 		respondError(c, http.StatusBadRequest, err.Error())
 	case errors.Is(err, crud.ErrNotFound):

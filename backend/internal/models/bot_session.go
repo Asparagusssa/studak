@@ -22,6 +22,10 @@ type BotSession struct {
 	DraftSearchMode   string `gorm:"size:16" json:"draft_search_mode"`
 	DraftPreferred    string `gorm:"size:255" json:"draft_preferred"`
 
+	AdminToken  string `gorm:"size:32;not null;default:''" json:"-"`
+	AdminAction string `gorm:"size:16;not null;default:''" json:"-"`
+	AdminTarget uint   `gorm:"not null;default:0" json:"-"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

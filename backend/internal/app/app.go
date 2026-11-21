@@ -131,6 +131,14 @@ func Run() error {
 	log.Printf("listening on %s", addr)
 	log.Printf("metrics listening on %s", metricsAddr)
 	bots.RegisterWebhooks(cfg.WebhookBaseURL)
+	bots.ConfigureMenus()
+	deliveryCtx, stopDelivery := context.WithCancel(context.Background())
+	defer stopDelivery()
+	var telegramEngine *maxbot.Bot
+	if telegramBot != nil {
+		telegramEngine = telegramBot.Engine
+	}
+	go maxbot.RunMatchDelivery(deliveryCtx, maxBot, telegramEngine)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)

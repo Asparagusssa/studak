@@ -4,13 +4,16 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 
 	"studak/internal/crud"
+	"studak/internal/logx"
 	"studak/internal/models"
 )
 
 func (b *Bot) showIncoming(s *models.BotSession) error {
+	if blocked, err := b.datingBlocked(s.ExternalID); blocked || err != nil {
+		return err
+	}
 	user, err := b.appUser(s)
 	if errors.Is(err, crud.ErrNotFound) {
 		return b.onStart(s.ExternalID, "")
@@ -44,6 +47,9 @@ func (b *Bot) showIncoming(s *models.BotSession) error {
 }
 
 func (b *Bot) react(s *models.BotSession, rawID string, like, inbox bool) error {
+	if blocked, err := b.datingBlocked(s.ExternalID); blocked || err != nil {
+		return err
+	}
 	next := b.showNext
 	if inbox {
 		next = b.showIncoming
@@ -88,14 +94,12 @@ func (b *Bot) react(s *models.BotSession, rawID string, like, inbox bool) error 
 		return err
 	}
 	if res.NewMatch {
-		if b.canNotify(peer) {
-			// Delivery may be unavailable if the recipient stopped the bot.
-			// The match can still be reopened from the saved list.
-			_, id, _ := b.destination(peer)
-			_ = b.sendMatch(id, me)
+		if err := b.deliverPendingMatch(me.ID, peer.ID); err != nil {
+			logx.Error("mutuality delivery pending", err)
 		}
-		return b.sendMatch(s.ExternalID, peer)
+		return nil
 	}
+
 	if b.canNotify(peer) {
 		_ = b.notify(peer, "У тебя новый лайк 💌\nПосмотри анкету и реши, взаимно ли это.", [][]Button{
 			{CallbackButton("Посмотреть лайк", "menu:incoming")},
@@ -119,96 +123,22 @@ func (b *Bot) matchKeyboard(peer *models.User) [][]Button {
 	if _, label, link := b.contactDetails(peer); link != "" {
 		rows = append(rows, []Button{{Type: "link", Text: label, URL: link}})
 	}
-	return append(rows, []Button{CallbackButton("Мои мэтчи", "matches:0"), blockButton(peer.ID)})
+	return append(rows, []Button{blockButton(peer.ID), CallbackButton("В меню", "menu:home")})
 }
 
-func (b *Bot) showMatches(s *models.BotSession, offset int) error {
-	const pageSize = 8
-	me, err := b.appUser(s)
-	if errors.Is(err, crud.ErrNotFound) {
-		return b.onStart(s.ExternalID, "")
-	}
-	if err != nil {
+// Old history buttons explain where to find contacts without recreating a match.
+func (b *Bot) showMatches(s *models.BotSession, _ int) error {
+	if blocked, err := b.datingBlocked(s.ExternalID); blocked || err != nil {
 		return err
 	}
 	if err := b.leaveWrite(s); err != nil {
 		return err
 	}
-	users, err := crud.ListMatches(b.DB, me.ID, offset, pageSize+1)
-	if errors.Is(err, crud.ErrContactRequired) {
-		return b.handleContact(s, "edit")
-	}
-	if err != nil {
-		return err
-	}
-	if len(users) == 0 && offset > 0 {
-		return b.showMatches(s, 0)
-	}
-	text := "Мои мэтчи 💛\nВыбери анкету, чтобы получить контакт и познакомиться напрямую."
-	rows := make([][]Button, 0, pageSize+2)
-	for _, person := range users[:min(len(users), pageSize)] {
-		label := []rune(strings.Join(strings.Fields(fmt.Sprintf("%s, %d", person.Name, person.Age)), " "))
-		if len(label) > 32 {
-			label = append(label[:31], '…')
-		}
-		rows = append(rows, []Button{CallbackButton(string(label), fmt.Sprintf("match:%d", person.ID))})
-	}
-	var pages []Button
-	if offset > 0 {
-		pages = append(pages, CallbackButton("← Назад", fmt.Sprintf("matches:%d", max(0, offset-pageSize))))
-	}
-	if len(users) > pageSize {
-		pages = append(pages, CallbackButton("Дальше →", fmt.Sprintf("matches:%d", offset+pageSize)))
-	}
-	if len(pages) > 0 {
-		rows = append(rows, pages)
-	}
-	if len(users) == 0 {
-		text = "Здесь появятся взаимные симпатии 💛"
-		rows = append(rows, []Button{CallbackButton("Входящие лайки", "menu:incoming")})
-	}
-	return b.send(s.ExternalID, text, append(rows, []Button{CallbackButton("В меню", "menu:home")}))
+	return b.send(s.ExternalID, "Мэтчи больше не сохраняются. Контакт остаётся только в сообщении о взаимной симпатии в этой переписке.", menuKeyboard())
 }
-
-func (b *Bot) showMatch(s *models.BotSession, raw string) error {
-	_, peer, err := b.findMatch(s, raw)
-	if errors.Is(err, crud.ErrContactRequired) {
-		return b.handleContact(s, "edit")
-	}
-	if errors.Is(err, crud.ErrNotFound) {
-		return b.matchGone(s)
-	}
-	if err != nil {
-		return err
-	}
-	if err := b.leaveWrite(s); err != nil {
-		return err
-	}
-	// MatchedUser intentionally retrieves just the user; reload the university for the card.
-	peer, err = crud.GetUser(b.DB, peer.ID)
-	if errors.Is(err, crud.ErrNotFound) {
-		return b.matchGone(s)
-	}
-	if err != nil {
-		return err
-	}
-	return b.sendProfile(s.ExternalID, peer, b.matchText(peer), b.matchKeyboard(peer))
-}
-
-func (b *Bot) findMatch(s *models.BotSession, raw string) (*models.User, *models.User, error) {
-	id, ok := userIDArg(raw)
-	if !ok {
-		return nil, nil, crud.ErrNotFound
-	}
-	me, err := b.appUser(s)
-	if err != nil {
-		return nil, nil, err
-	}
-	peer, err := crud.MatchedUser(b.DB, me.ID, id)
-	return me, peer, err
-}
+func (b *Bot) showMatch(s *models.BotSession, _ string) error { return b.showMatches(s, 0) }
 
 func userIDArg(value string) (uint, bool) {
-	id, err := strconv.ParseUint(value, 10, strconv.IntSize)
+	id, err := strconv.ParseUint(value, 10, 32)
 	return uint(id), err == nil && id > 0
 }
