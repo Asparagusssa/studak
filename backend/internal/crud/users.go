@@ -29,6 +29,8 @@ type CreateUserInput struct {
 	PhotoURL               string `json:"photo_url"`
 	MaxPhotoToken          string `json:"-"`
 	TelegramPhotoID        string `json:"-"`
+	TelegramUsername       string `json:"-"`
+	MaxProfileURL          string `json:"-"`
 	MyUniversityID         *uint  `json:"my_university_id"`
 	SearchMode             string `json:"search_mode"`
 	SearchGender           string `json:"-"`
@@ -45,6 +47,8 @@ type UpdateUserInput struct {
 	PhotoURL               *string `json:"photo_url"`
 	MaxPhotoToken          *string `json:"-"`
 	TelegramPhotoID        *string `json:"-"`
+	TelegramUsername       *string `json:"-"`
+	MaxProfileURL          *string `json:"-"`
 	MyUniversityID         *uint   `json:"my_university_id"`
 	SearchMode             *string `json:"search_mode"`
 	SearchGender           *string `json:"-"`
@@ -53,19 +57,21 @@ type UpdateUserInput struct {
 
 func CreateUser(db *gorm.DB, in CreateUserInput) (*models.User, error) {
 	user := models.User{
-		TelegramID:      in.TelegramID,
-		MaxID:           in.MaxID,
-		WebUUID:         strings.TrimSpace(in.WebUUID),
-		Name:            strings.TrimSpace(in.Name),
-		Age:             in.Age,
-		Gender:          strings.TrimSpace(in.Gender),
-		Bio:             strings.TrimSpace(in.Bio),
-		PhotoURL:        strings.TrimSpace(in.PhotoURL),
-		MaxPhotoToken:   strings.TrimSpace(in.MaxPhotoToken),
-		TelegramPhotoID: strings.TrimSpace(in.TelegramPhotoID),
-		MyUniversityID:  in.MyUniversityID,
-		SearchMode:      strings.TrimSpace(in.SearchMode),
-		SearchGender:    strings.TrimSpace(in.SearchGender),
+		TelegramID:       in.TelegramID,
+		MaxID:            in.MaxID,
+		WebUUID:          strings.TrimSpace(in.WebUUID),
+		Name:             strings.TrimSpace(in.Name),
+		Age:              in.Age,
+		Gender:           strings.TrimSpace(in.Gender),
+		Bio:              strings.TrimSpace(in.Bio),
+		PhotoURL:         strings.TrimSpace(in.PhotoURL),
+		MaxPhotoToken:    strings.TrimSpace(in.MaxPhotoToken),
+		TelegramPhotoID:  strings.TrimSpace(in.TelegramPhotoID),
+		TelegramUsername: strings.TrimSpace(in.TelegramUsername),
+		MaxProfileURL:    strings.TrimSpace(in.MaxProfileURL),
+		MyUniversityID:   in.MyUniversityID,
+		SearchMode:       strings.TrimSpace(in.SearchMode),
+		SearchGender:     strings.TrimSpace(in.SearchGender),
 	}
 	if user.MaxPhotoToken != "" || user.TelegramPhotoID != "" {
 		user.PhotoURL = ""
@@ -134,6 +140,12 @@ func UpdateUser(db *gorm.DB, id uint, in UpdateUserInput) (*models.User, error) 
 		}
 		if in.Bio != nil {
 			user.Bio = strings.TrimSpace(*in.Bio)
+		}
+		if in.TelegramUsername != nil {
+			user.TelegramUsername = strings.TrimSpace(*in.TelegramUsername)
+		}
+		if in.MaxProfileURL != nil {
+			user.MaxProfileURL = strings.TrimSpace(*in.MaxProfileURL)
 		}
 		if in.PhotoURL != nil {
 			user.PhotoURL = strings.TrimSpace(*in.PhotoURL)
@@ -222,6 +234,12 @@ func GetUserByMaxID(db *gorm.DB, maxID int64) (*models.User, error) {
 }
 
 func validateUser(u *models.User) error {
+	if !models.IsValidTelegramUsername(u.TelegramUsername) {
+		return invalid("invalid Telegram username")
+	}
+	if !models.IsValidMaxProfileURL(u.MaxProfileURL) {
+		return invalid("MAX profile link must be an HTTPS max.ru/u/ link")
+	}
 	if u.TelegramID != nil && *u.TelegramID <= 0 {
 		return invalid("telegram_id must be a positive integer")
 	}
@@ -243,8 +261,8 @@ func validateUser(u *models.User) error {
 	if len([]rune(u.Gender)) > 16 {
 		return invalid("gender is too long")
 	}
-	if u.Gender != "" && u.Gender != "male" && u.Gender != "female" && u.Gender != "other" {
-		return invalid("gender must be one of: male, female, other")
+	if u.Gender != "" && u.Gender != "male" && u.Gender != "female" {
+		return invalid("gender must be male or female")
 	}
 	if len([]rune(u.PhotoURL)) > 512 {
 		return invalid("photo_url is too long")

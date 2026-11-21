@@ -15,6 +15,6 @@ type University struct {
 }
 
 func (u *University) BeforeSave(_ *gorm.DB) error {
-	u.SearchKey = strings.ToLower(u.ShortName + " " + u.Name)
+	u.SearchKey = strings.ReplaceAll(strings.ToLower(u.ShortName+" "+u.Name), "ё", "е")
 	return nil
 }

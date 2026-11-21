@@ -37,6 +37,7 @@ const (
 	stepBio        = "bio"
 	stepPhoto      = "photo"
 	stepEditPhoto  = "edit_photo"
+	stepContact    = "contact"
 	stepMenu       = "menu"
 	stepWrite      = "write"
 )
@@ -120,6 +121,9 @@ func (b *Bot) HandleUpdate(u Update) error {
 }
 
 func (b *Bot) handleUpdate(u Update) error {
+	if err := b.rememberTelegramUsername(u); err != nil {
+		return err
+	}
 	switch u.UpdateType {
 	case "bot_started":
 		if u.User == nil {
@@ -192,7 +196,7 @@ func (b *Bot) onStart(maxID int64, displayName string) error {
 	if err := b.saveSession(s); err != nil {
 		return err
 	}
-	text := "Привет! Я Искра ✨\nЗдесь можно знакомиться со студентами своего вуза или искать в других. Заполни анкету, и я покажу, кто есть в ленте.\n\n1/8 · Как тебя зовут?"
+	text := "Привет! Это Студак 🎓\nЗдесь можно знакомиться со студентами своего вуза или колледжа и искать в других учебных заведениях. Заполни анкету с фото, и я покажу, кто есть в ленте. После взаимного лайка вы получите контакты друг друга для общения напрямую.\n\n1/8 · Как тебя зовут?"
 	if displayName != "" {
 		text += fmt.Sprintf("\nМожешь написать «%s» или выбрать другое имя.", displayName)
 	}
@@ -204,12 +208,6 @@ func (b *Bot) onMessage(maxID int64, body Body) error {
 	s, err := b.session(maxID)
 	if err != nil {
 		return err
-	}
-	if body.Mid != "" {
-		processed, err := b.relaySeen(body.Mid)
-		if err != nil || processed {
-			return err
-		}
 	}
 	lower := strings.ToLower(text)
 	if lower == "/cancel" && s.Step == stepWrite {
@@ -223,7 +221,13 @@ func (b *Bot) onMessage(maxID int64, body Body) error {
 		return b.onStart(maxID, name)
 	}
 	if s.Step == stepWrite {
-		return b.relayMessage(s, body)
+		if s.PeerUserID != nil {
+			return b.showMatch(s, strconv.FormatUint(uint64(*s.PeerUserID), 10))
+		}
+		return b.cancelWrite(s)
+	}
+	if s.Step == stepContact {
+		return b.saveMaxContact(s, body)
 	}
 	if strings.HasPrefix(s.Step, deleteStepPrefix) {
 		return b.sendDeleteConfirmation(s)
@@ -330,7 +334,7 @@ func (b *Bot) onCallback(maxID int64, payload string) error {
 		if s.Step != stepGender {
 			return b.resume(s, staleButtonText)
 		}
-		if arg != "male" && arg != "female" && arg != "other" {
+		if arg != "male" && arg != "female" {
 			return b.askGender(maxID)
 		}
 		s.DraftGender = arg
@@ -457,7 +461,7 @@ func (b *Bot) onCallback(maxID int64, payload string) error {
 		switch arg {
 		case "skip":
 			if s.Step == stepPhoto {
-				return b.finishOnboarding(s, nil)
+				return b.askPhoto(s, "Фото обязательно: без него анкету нельзя опубликовать.")
 			}
 		case "edit":
 			if _, err := b.appUser(s); err != nil {
@@ -469,13 +473,15 @@ func (b *Bot) onCallback(maxID int64, payload string) error {
 			return b.beginPhoto(s, stepEditPhoto)
 		case "remove":
 			if s.Step == stepEditPhoto {
-				return b.updatePhoto(s, "")
+				return b.askPhoto(s, "Фото обязательно: его можно заменить, но нельзя удалить.")
 			}
 		}
 		return b.resume(s, staleButtonText)
 	case "privacy":
 		return b.handlePrivacy(s, arg)
-	case "more":
+	case "contact":
+		return b.handleContact(s, arg)
+	case "block", "more":
 		return b.askBlock(s, arg)
 	case "like", "skip", "like_back", "skip_in":
 		return b.react(s, arg, kind == "like" || kind == "like_back", kind == "like_back" || kind == "skip_in")
@@ -525,7 +531,6 @@ func (b *Bot) onCallback(maxID int64, payload string) error {
 func (b *Bot) askGender(maxID int64) error {
 	return b.send(maxID, "3/8 · Как указать тебя в анкете?", [][]Button{
 		{CallbackButton("Парень", "gender:male"), CallbackButton("Девушка", "gender:female")},
-		{CallbackButton("Другое", "gender:other")},
 	})
 }
 
@@ -535,14 +540,14 @@ func (b *Bot) askSearchMode(maxID int64, filterOnly bool) error {
 		text = "Где искать новые анкеты? 🎓"
 	}
 	return b.send(maxID, text, [][]Button{
-		{CallbackButton("В моём вузе", "mode:"+models.SearchModeMyOnly)},
-		{CallbackButton("В выбранных вузах", "mode:"+models.SearchModeSelected)},
-		{CallbackButton("Во всех вузах", "mode:"+models.SearchModeAll)},
+		{CallbackButton("В моём учебном заведении", "mode:"+models.SearchModeMyOnly)},
+		{CallbackButton("В выбранных учебных заведениях", "mode:"+models.SearchModeSelected)},
+		{CallbackButton("Во всех учебных заведениях", "mode:"+models.SearchModeAll)},
 	})
 }
 
 func (b *Bot) askUniversity(maxID int64, intro string) error {
-	return b.send(maxID, withIntro(intro, "5/8 · В каком вузе ты учишься? Напиши название или сокращение, например МГУ или ИТМО."), nil)
+	return b.send(maxID, withIntro(intro, "5/8 · Где ты учишься? Напиши название или сокращение вуза или колледжа, например УдГУ или ИПЭК. Можно написать часть названия — предложу близкие варианты."), nil)
 }
 
 func (b *Bot) askBio(maxID int64, intro string) error {
@@ -550,7 +555,7 @@ func (b *Bot) askBio(maxID int64, intro string) error {
 }
 
 func (b *Bot) askPreferred(s *models.BotSession, intro string) error {
-	return b.send(s.ExternalID, withIntro(intro, "Напиши название вуза и выбери его из списка. Так можно добавить несколько вузов. Когда закончишь, нажми «Готово»."), preferredKeyboard())
+	return b.send(s.ExternalID, withIntro(intro, "Напиши название вуза или колледжа и выбери его из списка. Так можно добавить несколько учебных заведений. Когда закончишь, нажми «Готово»."), preferredKeyboard())
 }
 
 func preferredKeyboard() [][]Button {
@@ -596,7 +601,9 @@ func (b *Bot) resume(s *models.BotSession, intro string) error {
 	case stepPhoto, stepEditPhoto:
 		return b.askPhoto(s, intro)
 	case stepWrite:
-		return b.send(id, "Отправь текст для собеседника или нажми «Отмена».", writeKeyboard())
+		return b.cancelWrite(s)
+	case stepContact:
+		return b.askMaxContact(s, intro)
 	case stepMenu:
 		return b.send(id, menuText, menuKeyboard())
 	default:
@@ -608,16 +615,16 @@ func (b *Bot) offerUniversities(s *models.BotSession, query string) error {
 	preferred := s.Step == stepPreferred || s.Step == stepFilterPref
 	if query == "" || len([]rune(query)) > crud.MaxUniversitySearchRunes {
 		if preferred {
-			return b.askPreferred(s, "Нужно короткое название вуза, например МФТИ.")
+			return b.askPreferred(s, "Напиши название или сокращение вуза или колледжа, например УдГУ или ИПЭК.")
 		}
-		return b.askUniversity(s.ExternalID, "Нужно короткое название вуза, например МФТИ.")
+		return b.askUniversity(s.ExternalID, "Напиши название или сокращение вуза или колледжа, например УдГУ или ИПЭК.")
 	}
 	unis, err := crud.SearchUniversities(b.DB, query)
 	if err != nil {
 		return err
 	}
 	if len(unis) == 0 {
-		text := "Не нашёл такой вуз. Попробуй сокращение или часть названия, например «МФТИ» или «Высшая школа»."
+		text := "Не нашёл такое учебное заведение. Попробуй сокращение или часть названия, например «УдГУ» или «политехнический»."
 		if preferred {
 			return b.send(s.ExternalID, text, preferredKeyboard())
 		}
@@ -641,14 +648,17 @@ func (b *Bot) offerUniversities(s *models.BotSession, query string) error {
 	if preferred {
 		rows = append(rows, preferredKeyboard()...)
 	}
-	return b.send(s.ExternalID, "Нашёл такие варианты. Выбери нужный вуз:", rows)
+	return b.send(s.ExternalID, "Выбери учебное заведение из подходящих и похожих вариантов:", rows)
 }
 
 func (b *Bot) finishOnboarding(s *models.BotSession, photoToken *string) error {
+	if photoToken == nil || strings.TrimSpace(*photoToken) == "" {
+		return b.askPhoto(s, "Фото обязательно: без него анкету нельзя опубликовать.")
+	}
 	user, err := b.saveProfile(s, photoToken)
 	if err != nil {
 		logx.Error("MAX profile save failed", err)
-		return b.askPhoto(s, "Не удалось сохранить анкету. Попробуй отправить фото ещё раз или продолжить без него.")
+		return b.askPhoto(s, "Не удалось сохранить анкету. Попробуй отправить фото ещё раз.")
 	}
 	id := user.ID
 	s.UserID = &id
@@ -656,9 +666,9 @@ func (b *Bot) finishOnboarding(s *models.BotSession, photoToken *string) error {
 	if err := b.saveSession(s); err != nil {
 		return err
 	}
-	text := "Анкета готова! ✨\nМожешь посмотреть, кто есть в ленте, или сначала открыть свою анкету."
-	if photoToken != nil {
-		text = "Анкета с фото готова! ✨\nМожешь посмотреть, кто есть в ленте, или сначала открыть свою анкету."
+	text := "Анкета с фото готова! ✨\nМожешь посмотреть, кто есть в ленте, или сначала открыть свою анкету."
+	if b.channel() == channelMax && user.MaxProfileURL == "" {
+		text += "\n\nДобавь личную ссылку MAX в «Моя анкета» → «Контакт MAX». Она будет доступна только после взаимного лайка."
 	}
 	return b.send(s.ExternalID, text, menuKeyboard())
 }
@@ -685,6 +695,9 @@ func (b *Bot) saveProfile(s *models.BotSession, photoToken *string) (*models.Use
 		if s.DraftSearchGender != "" {
 			in.SearchGender = &s.DraftSearchGender
 		}
+		if b.channel() == "telegram" {
+			in.TelegramUsername = &s.MessengerUsername
+		}
 		return crud.UpdateUser(b.DB, *s.UserID, in)
 	}
 	in := crud.CreateUserInput{
@@ -701,6 +714,7 @@ func (b *Bot) saveProfile(s *models.BotSession, photoToken *string) (*models.Use
 	if b.channel() == "telegram" {
 		in.TelegramID = &maxID
 		in.MaxID = nil
+		in.TelegramUsername = s.MessengerUsername
 	}
 	if photoToken != nil {
 		if b.channel() == "telegram" {
@@ -755,12 +769,12 @@ func (b *Bot) saveFilter(s *models.BotSession) error {
 	if err := b.saveSession(s); err != nil {
 		return err
 	}
-	text := "Теперь в ленте будут анкеты из всех вузов."
+	text := "Теперь в ленте будут анкеты из всех учебных заведений."
 	switch mode {
 	case models.SearchModeMyOnly:
-		text = "Теперь в ленте будут анкеты только из твоего вуза."
+		text = "Теперь в ленте будут анкеты только из твоего учебного заведения."
 	case models.SearchModeSelected:
-		text = "Теперь в ленте будут анкеты из выбранных вузов."
+		text = "Теперь в ленте будут анкеты из выбранных учебных заведений."
 	}
 	return b.send(s.ExternalID, text, menuKeyboard())
 }
@@ -806,7 +820,7 @@ func (b *Bot) showNext(s *models.BotSession) error {
 		s.Step = stepMenu
 		_ = b.saveSession(s)
 		return b.send(s.ExternalID, "Новых анкет по твоим настройкам пока нет. Попробуй расширить поиск или загляни позже.", [][]Button{
-			{CallbackButton("Изменить вузы", "menu:filter"), CallbackButton("Кого искать", "menu:who")},
+			{CallbackButton("Где искать", "menu:filter"), CallbackButton("Кого искать", "menu:who")},
 			{CallbackButton("Проверить ещё раз", "menu:feed"), CallbackButton("В меню", "menu:home")},
 		})
 	}
@@ -816,8 +830,8 @@ func (b *Bot) showNext(s *models.BotSession) error {
 	s.Step = stepMenu
 	_ = b.saveSession(s)
 	return b.sendProfile(s.ExternalID, next, "", [][]Button{
-		{CallbackButton("💛 Нравится", fmt.Sprintf("like:%d", next.ID)), CallbackButton("Пропустить", fmt.Sprintf("skip:%d", next.ID))},
-		{moreButton(next.ID), CallbackButton("В меню", "menu:home")},
+		{CallbackButton("❤️", fmt.Sprintf("like:%d", next.ID)), CallbackButton("👎", fmt.Sprintf("skip:%d", next.ID))},
+		{blockButton(next.ID), CallbackButton("В меню", "menu:home")},
 	})
 }
 
@@ -887,13 +901,13 @@ func menuKeyboard() [][]Button {
 		{CallbackButton("✨ Смотреть анкеты", "menu:feed")},
 		{CallbackButton("💌 Входящие лайки", "menu:incoming"), CallbackButton("Мои мэтчи", "matches:0")},
 		{CallbackButton("Моя анкета", "menu:profile")},
-		{CallbackButton("Вузы для поиска", "menu:filter"), CallbackButton("Кого искать", "menu:who")},
+		{CallbackButton("Где искать", "menu:filter"), CallbackButton("Кого искать", "menu:who")},
 		{CallbackButton("⚙️ Настройки", "privacy:home")},
 	}
 }
 
 func formatProfile(u *models.User) string {
-	uni := "вуз не указан"
+	uni := "учебное заведение не указано"
 	if u.MyUniversity != nil {
 		if u.MyUniversity.ShortName != "" {
 			uni = u.MyUniversity.ShortName

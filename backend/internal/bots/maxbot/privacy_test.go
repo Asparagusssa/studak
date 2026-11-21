@@ -98,8 +98,8 @@ func TestProfilePrivacyInMax(t *testing.T) {
 	}
 	click(303, fmt.Sprintf("write:%d", a.ID))
 	message(303, "under-pause", "Старый мэтч всё ещё открыт")
-	if !sent("Старый мэтч всё ещё открыт") {
-		t.Fatal("pause broke an existing conversation")
+	if sent("Старый мэтч всё ещё открыт") {
+		t.Fatal("bot still relays messages during a pause")
 	}
 	click(101, "privacy:resume")
 	target, err := crud.GetNextProfile(db, b.ID)

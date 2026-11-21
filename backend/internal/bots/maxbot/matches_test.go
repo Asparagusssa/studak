@@ -15,7 +15,7 @@ import (
 	"studak/internal/models"
 )
 
-func TestIncomingLikesAndPrivateMatchMessages(t *testing.T) {
+func TestIncomingLikesAndDirectContacts(t *testing.T) {
 	db, err := testDB(filepath.Join(t.TempDir(), "match.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -28,7 +28,7 @@ func TestIncomingLikesAndPrivateMatchMessages(t *testing.T) {
 	}
 	create := func(name string, maxID int64) *models.User {
 		t.Helper()
-		user, err := crud.CreateUser(db, crud.CreateUserInput{Name: name, Age: 21, MaxID: &maxID})
+		user, err := crud.CreateUser(db, crud.CreateUserInput{Name: name, Age: 21, MaxID: &maxID, MaxProfileURL: fmt.Sprintf("https://max.ru/u/user%d", maxID)})
 		must(err)
 		return user
 	}
@@ -62,7 +62,7 @@ func TestIncomingLikesAndPrivateMatchMessages(t *testing.T) {
 			for _, attachment := range body.Attachments {
 				for _, row := range attachment.Payload.Buttons {
 					for _, btn := range row {
-						msg.buttons = append(msg.buttons, btn.Payload)
+						msg.buttons = append(msg.buttons, btn.Payload, btn.URL)
 					}
 				}
 			}
@@ -137,22 +137,22 @@ func TestIncomingLikesAndPrivateMatchMessages(t *testing.T) {
 		t.Fatalf("expected one match notice per recipient, got %v", got)
 	}
 	must(bot.onCallback(202, "matches:0"))
-	if !hasButton("202", fmt.Sprintf("match:%d", anna.ID)) || !hasButton("202", fmt.Sprintf("write:%d", anna.ID)) {
-		t.Fatal("match and write actions are missing")
+	if !hasButton("202", fmt.Sprintf("match:%d", anna.ID)) || !hasButton("202", "https://max.ru/u/user101") {
+		t.Fatal("match and direct-contact actions are missing")
 	}
 
 	click(202, "write", anna.ID)
 	message(202, "matched-hi", "Привет! Ты в каком корпусе?")
 	click(202, "write", anna.ID)
 	message(202, "matched-hi", "Привет! Ты в каком корпусе?")
-	if countText("101", "Ты в каком корпусе?") != 1 || !hasButton("101", fmt.Sprintf("write:%d", boris.ID)) {
-		t.Fatal("message was not delivered exactly once with a reply button")
+	if countText("101", "Ты в каком корпусе?") != 0 || !hasButton("202", "https://max.ru/u/user101") {
+		t.Fatal("legacy write button relayed text instead of showing the direct contact")
 	}
 
 	click(101, "write", boris.ID)
 	message(101, "matched-reply", "В главном кампусе")
-	if countText("202", "В главном кампусе") != 1 {
-		t.Fatal("reply was not delivered to the match")
+	if countText("202", "В главном кампусе") != 0 {
+		t.Fatal("bot still forwards match replies")
 	}
 
 	click(202, "write", anna.ID)

@@ -2,12 +2,22 @@ package crud
 
 import (
 	"errors"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"studak/internal/models"
 )
+
+const SkippedProfileCooldown = 2 * time.Hour
+
+// excludedReactions hides likes indefinitely and skips until the cooldown ends.
+func excludedReactions(db *gorm.DB, userID uint) *gorm.DB {
+	return db.Model(&models.Like{}).Select("to_user_id").
+		Where("from_user_id = ?", userID).
+		Where("is_like = ? OR updated_at > ?", true, db.NowFunc().Add(-SkippedProfileCooldown))
+}
 
 type LikeResult struct {
 	Like     models.Like `json:"like"`
@@ -64,7 +74,8 @@ func setLike(db *gorm.DB, fromUserID, toUserID uint, isLike, once, inbox bool) (
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
-		if once && err == nil {
+		now := tx.NowFunc()
+		if once && err == nil && (previous.IsLike || previous.UpdatedAt.After(now.Add(-SkippedProfileCooldown))) {
 			return ErrAlreadyExists
 		}
 
@@ -80,7 +91,6 @@ func setLike(db *gorm.DB, fromUserID, toUserID uint, isLike, once, inbox bool) (
 			return ErrNotFound
 		}
 		mutual := isLike && reverse > 0
-		now := tx.NowFunc()
 		// A map writes false explicitly instead of applying IsLike's true default.
 		err = tx.Model(&models.Like{}).Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "from_user_id"}, {Name: "to_user_id"}},
@@ -117,8 +127,8 @@ func setLike(db *gorm.DB, fromUserID, toUserID uint, isLike, once, inbox bool) (
 	return &result, nil
 }
 
-// NextIncomingLike lists only positive incoming reactions the viewer has not
-// answered. An explicitly skipped profile never reappears in this inbox.
+// NextIncomingLike lists positive incoming reactions. Skipped senders can
+// reappear after the cooldown while their incoming like remains active.
 func NextIncomingLike(db *gorm.DB, viewerID uint) (*models.User, error) {
 	var viewer models.User
 	if err := db.Select("id", "paused").First(&viewer, viewerID).Error; err != nil {
@@ -127,7 +137,7 @@ func NextIncomingLike(db *gorm.DB, viewerID uint) (*models.User, error) {
 	if viewer.Paused {
 		return nil, ErrProfilePaused
 	}
-	answered := db.Model(&models.Like{}).Select("to_user_id").Where("from_user_id = ?", viewerID)
+	answered := excludedReactions(db, viewerID)
 	var user models.User
 	err := excludeBlocked(db, viewerID).Preload("MyUniversity").
 		Where("users.paused = ?", false).

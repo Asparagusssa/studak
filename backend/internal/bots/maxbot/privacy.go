@@ -17,8 +17,8 @@ const (
 	stepBlock        = "block"
 )
 
-func moreButton(id uint) Button {
-	return CallbackButton("⋯ Ещё", fmt.Sprintf("more:%d", id))
+func blockButton(id uint) Button {
+	return CallbackButton("Заблокировать", fmt.Sprintf("block:%d", id))
 }
 
 func (b *Bot) handlePrivacy(s *models.BotSession, payload string) error {
@@ -90,7 +90,7 @@ func (b *Bot) handlePrivacy(s *models.BotSession, payload string) error {
 		if err != nil {
 			return err
 		}
-		return b.send(s.ExternalID, "Пользователь заблокирован. Вы больше не увидите анкеты друг друга и не сможете переписываться через бота.", [][]Button{
+		return b.send(s.ExternalID, "Пользователь заблокирован. Вы больше не увидите анкеты друг друга в Студаке. Уже полученный контакт останется у собеседника.", [][]Button{
 			{CallbackButton("Заблокированные", "privacy:blocked:0"), CallbackButton("В меню", "menu:home")},
 		})
 	case "blocked":
@@ -116,10 +116,10 @@ func (b *Bot) handlePrivacy(s *models.BotSession, payload string) error {
 func (b *Bot) sendPrivacy(s *models.BotSession, user *models.User, intro string) error {
 	action := "Поставить на паузу"
 	target := "privacy:pause"
-	status := "Анкета видна в поиске. На паузе новые знакомства остановятся, а существующие мэтчи и переписка останутся."
+	status := "Анкета видна в поиске. На паузе новые знакомства остановятся, а существующие мэтчи и контакты останутся доступны."
 	if user.Paused {
 		action, target = "Вернуть в поиск", "privacy:resume"
-		status = "Анкета скрыта из поиска. Существующие мэтчи и переписка доступны."
+		status = "Анкета скрыта из поиска. Существующие мэтчи и контакты доступны."
 	}
 	title := "Настройки"
 	if intro != "" {
@@ -141,7 +141,7 @@ func (b *Bot) pausedMenu(maxID int64) error {
 
 func (b *Bot) sendDeleteConfirmation(s *models.BotSession) error {
 	challenge := strings.TrimPrefix(s.Step, deleteStepPrefix)
-	return b.send(s.ExternalID, "Удалить анкету?\n\nФото, лайки и мэтчи будут удалены из «Искры». Это нельзя отменить. Уже доставленные сообщения останутся в мессенджере.\n\nЕсли нужен перерыв, можно поставить анкету на паузу.", [][]Button{
+	return b.send(s.ExternalID, "Удалить анкету?\n\nФото, лайки и мэтчи будут удалены из «Студака». Это нельзя отменить. Уже полученные другими пользователями контакты не удаляются.\n\nЕсли нужен перерыв, можно поставить анкету на паузу.", [][]Button{
 		{CallbackButton("Оставить анкету", "privacy:home"), CallbackButton("Удалить навсегда", "privacy:confirm_delete:"+challenge)},
 	})
 }
@@ -176,7 +176,7 @@ func (b *Bot) askBlock(s *models.BotSession, raw string) error {
 	if err := b.saveSession(s); err != nil {
 		return err
 	}
-	return b.send(s.ExternalID, fmt.Sprintf("%s, %d\n\nПри блокировке вы перестанете видеть анкеты и переписываться. Если был мэтч, он исчезнет. Снять блокировку можно в настройках.", peer.Name, peer.Age), [][]Button{
+	return b.send(s.ExternalID, fmt.Sprintf("%s, %d\n\nПри блокировке вы перестанете видеть анкеты друг друга в Студаке. Если был мэтч, он исчезнет. Уже полученный контакт останется у собеседника. Снять блокировку можно в настройках.", peer.Name, peer.Age), [][]Button{
 		{CallbackButton("Заблокировать", fmt.Sprintf("privacy:block:%d", peer.ID)), CallbackButton("Отмена", "menu:home")},
 	})
 }

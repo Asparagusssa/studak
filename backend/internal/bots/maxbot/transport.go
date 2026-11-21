@@ -58,7 +58,7 @@ func (b *Bot) destination(peer *models.User) (Messenger, int64, string) {
 	return nil, 0, ""
 }
 
-func (b *Bot) canWrite(peer *models.User) bool {
+func (b *Bot) canNotify(peer *models.User) bool {
 	client, id, _ := b.destination(peer)
 	return client != nil && id > 0
 }

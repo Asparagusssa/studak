@@ -108,13 +108,3 @@ func DeleteMessengerProfile(db *gorm.DB, userID uint, externalID int64, channel,
 		return tx.Delete(&user).Error
 	})
 }
-
-// LockMatch rechecks that the pair can still write while serializing the
-// message claim with block, like, and profile deletion operations.
-func LockMatch(tx *gorm.DB, actor, peer uint) error {
-	if _, err := lockUserPair(tx, actor, peer); err != nil {
-		return err
-	}
-	_, err := MatchedUser(tx, actor, peer)
-	return err
-}

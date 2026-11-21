@@ -3,18 +3,24 @@ package crud
 import (
 	"crypto/rand"
 	"math/big"
-	"strings"
-	"unicode/utf8"
 
 	"gorm.io/gorm"
 
 	"studak/internal/models"
 )
 
-// GetNextProfile returns a candidate starting from a random ID pivot. Unlike
-// ORDER BY RANDOM(), this lets PostgreSQL use the primary-key index as the user
-// table grows.
+// GetNextProfile mixes age-priority candidates with peers within two years.
+// Each draw prefers the priority group with probability 2/3; an empty group
+// falls back to the other. A random ID pivot avoids ORDER BY RANDOM().
 func GetNextProfile(db *gorm.DB, userID uint) (*models.User, error) {
+	roll, err := randomPivot(3)
+	if err != nil {
+		return nil, err
+	}
+	return getNextProfile(db, userID, roll <= 2)
+}
+
+func getNextProfile(db *gorm.DB, userID uint, priorityFirst bool) (*models.User, error) {
 	var me models.User
 	if err := db.First(&me, userID).Error; err != nil {
 		return nil, wrapNotFound(err)
@@ -24,11 +30,12 @@ func GetNextProfile(db *gorm.DB, userID uint) (*models.User, error) {
 		return nil, ErrProfilePaused
 	}
 
-	reacted := db.Model(&models.Like{}).Select("to_user_id").Where("from_user_id = ?", me.ID)
+	reacted := excludedReactions(db, me.ID)
 
 	q := excludeBlocked(db.Model(&models.User{}), me.ID).
 		Where("users.id <> ? AND users.paused = ?", me.ID, false).
-		Where("users.id NOT IN (?)", reacted)
+		Where("users.id NOT IN (?)", reacted).
+		Where("users.age BETWEEN ? AND ?", max(MinAge, me.Age-2), min(MaxAge, me.Age+2))
 
 	if me.SearchGender == models.SearchGenderFemale || me.SearchGender == models.SearchGenderMale {
 		q = q.Where("users.gender = ?", me.SearchGender)
@@ -70,18 +77,34 @@ func GetNextProfile(db *gorm.DB, userID uint) (*models.User, error) {
 		}
 		return &candidate, nil
 	}
-	// Keep the pivot queries independent so the wraparound does not also
-	// inherit the first query's lower bound.
+	// Keep the age buckets and pivot queries independent.
 	q = q.Session(&gorm.Session{})
-	if candidate, err := find(q.Where("users.id >= ?", pivot)); err == nil {
-		return candidate, nil
-	} else if err != gorm.ErrRecordNotFound {
-		return nil, err
+	queries := []*gorm.DB{q}
+	var gender string
+	var youngest, oldest int
+	switch me.Gender {
+	case "male":
+		gender, youngest, oldest = "female", me.Age-2, me.Age-1
+	case "female":
+		gender, youngest, oldest = "male", me.Age+1, me.Age+2
 	}
-	if candidate, err := find(q.Where("users.id < ?", pivot)); err == nil {
-		return candidate, nil
-	} else if err != gorm.ErrRecordNotFound {
-		return nil, err
+	if gender != "" {
+		priority := q.Where("users.gender = ? AND users.age BETWEEN ? AND ?", gender, youngest, oldest)
+		mixed := q.Where("COALESCE(users.gender, '') <> ? OR users.age < ? OR users.age > ?", gender, youngest, oldest)
+		queries = []*gorm.DB{priority, mixed}
+		if !priorityFirst {
+			queries[0], queries[1] = queries[1], queries[0]
+		}
+	}
+	for _, bucket := range queries {
+		bucket = bucket.Session(&gorm.Session{})
+		for _, query := range []*gorm.DB{bucket.Where("users.id >= ?", pivot), bucket.Where("users.id < ?", pivot)} {
+			if candidate, err := find(query); err == nil {
+				return candidate, nil
+			} else if err != gorm.ErrRecordNotFound {
+				return nil, err
+			}
+		}
 	}
 	return nil, ErrNoProfiles
 }
@@ -92,36 +115,4 @@ func randomPivot(maxID uint) (uint, error) {
 		return 0, err
 	}
 	return uint(n.Uint64()) + 1, nil
-}
-
-const (
-	universitySearchLimit    = 10
-	MaxUniversitySearchRunes = 100
-)
-
-// SearchUniversities does a case-insensitive substring match on full and short
-// names (Cyrillic included). Prefix matches are ranked first.
-func SearchUniversities(db *gorm.DB, query string) ([]models.University, error) {
-	query = strings.ToLower(strings.TrimSpace(query))
-	if utf8.RuneCountInString(query) > MaxUniversitySearchRunes {
-		return nil, invalid("university search query is too long")
-	}
-	unis := []models.University{}
-
-	q := db.Model(&models.University{})
-	if query != "" {
-		escaped := escapeLike(query)
-		q = q.Where("search_key LIKE ? ESCAPE '\\'", "%"+escaped+"%").
-			Order(gorm.Expr(`CASE
-				WHEN search_key LIKE ? ESCAPE '\' THEN 0
-				WHEN search_key LIKE ? ESCAPE '\' OR search_key LIKE ? ESCAPE '\' THEN 1
-				ELSE 2 END`,
-				escaped+"%", "% "+escaped+"%", "%«"+escaped+"%"))
-	}
-	err := q.Order("name").Limit(universitySearchLimit).Find(&unis).Error
-	return unis, err
-}
-
-func escapeLike(s string) string {
-	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }

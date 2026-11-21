@@ -17,12 +17,13 @@ import (
 )
 
 type tgQA struct {
-	t    *testing.T
-	db   *gorm.DB
-	bot  *Bot
-	seq  int
-	mu   sync.Mutex
-	sent []tgDelivery
+	t         *testing.T
+	db        *gorm.DB
+	bot       *Bot
+	seq       int
+	mu        sync.Mutex
+	sent      []tgDelivery
+	usernames map[int64]string
 }
 type tgDelivery struct {
 	Method, Text string
@@ -32,7 +33,7 @@ type tgDelivery struct {
 
 func newTGQA(t *testing.T) *tgQA {
 	t.Helper()
-	q := &tgQA{t: t, db: testDB(t)}
+	q := &tgQA{t: t, db: testDB(t), usernames: make(map[int64]string)}
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			ChatID  int64  `json:"chat_id"`
@@ -78,7 +79,7 @@ func (q *tgQA) post(raw []byte) {
 func (q *tgQA) message(id int64, text string, extra map[string]any) []byte {
 	q.t.Helper()
 	q.seq++
-	msg := map[string]any{"message_id": q.seq, "from": map[string]any{"id": id}, "chat": map[string]any{"id": id, "type": "private"}, "text": text}
+	msg := map[string]any{"message_id": q.seq, "from": map[string]any{"id": id, "username": q.usernames[id]}, "chat": map[string]any{"id": id, "type": "private"}, "text": text}
 	for k, v := range extra {
 		msg[k] = v
 	}
@@ -90,7 +91,7 @@ func (q *tgQA) message(id int64, text string, extra map[string]any) []byte {
 func (q *tgQA) click(id int64, data string) {
 	q.t.Helper()
 	q.seq++
-	raw, err := json.Marshal(map[string]any{"update_id": q.seq, "callback_query": map[string]any{"id": fmt.Sprintf("qa-callback-%d", q.seq), "from": map[string]any{"id": id}, "message": map[string]any{"chat": map[string]any{"id": id, "type": "private"}}, "data": data}})
+	raw, err := json.Marshal(map[string]any{"update_id": q.seq, "callback_query": map[string]any{"id": fmt.Sprintf("qa-callback-%d", q.seq), "from": map[string]any{"id": id, "username": q.usernames[id]}, "message": map[string]any{"chat": map[string]any{"id": id, "type": "private"}}, "data": data}})
 	q.must(err)
 	q.post(raw)
 }
@@ -129,7 +130,7 @@ func (q *tgQA) count(id int64, part string) int {
 	}
 	return n
 }
-func (q *tgQA) register(id int64, name, gender string) {
+func (q *tgQA) registerUntilPhoto(id int64, name, gender string) {
 	q.t.Helper()
 	q.message(id, "/start", nil)
 	q.message(id, name, nil)
@@ -146,7 +147,138 @@ func (q *tgQA) register(id int64, name, gender string) {
 	q.click(id, fmt.Sprintf("uni:%d", uni.ID))
 	q.click(id, "mode:all")
 	q.click(id, "bio_skip:")
-	q.click(id, "photo:skip")
+}
+
+func (q *tgQA) register(id int64, name, gender string) {
+	q.t.Helper()
+	q.registerUntilPhoto(id, name, gender)
+	q.message(id, "", map[string]any{"photo": []map[string]any{{"file_id": "registration-photo", "width": 800, "height": 900}}})
+}
+
+func TestTelegramRegistrationRequiresPhoto(t *testing.T) {
+	q := newTGQA(t)
+	q.message(91, "/start", nil)
+	if text := q.last(91).Text; !strings.Contains(text, "Студак") || strings.Contains(text, "Искра") {
+		t.Fatalf("incorrect welcome brand: %s", text)
+	}
+	q.registerUntilPhoto(91, "Анна", "female")
+	if len(q.last(91).Buttons) != 0 || !strings.Contains(q.last(91).Text, "Фото обязательно") {
+		t.Fatal("photo prompt still permits skipping")
+	}
+	q.click(91, "photo:skip")
+	q.message(91, "пропустить", nil)
+	if _, err := crud.GetUserByTelegramID(q.db, 91); err != crud.ErrNotFound || q.state(91).Step != "photo" {
+		t.Fatal("skipping published a profile without a photo")
+	}
+	q.message(91, "", map[string]any{"photo": []map[string]any{{"file_id": "required-photo", "width": 800, "height": 900}}})
+	if q.user(91).TelegramPhotoID != "required-photo" || q.state(91).Step != "menu" {
+		t.Fatal("registration did not finish after sending a photo")
+	}
+}
+
+func TestTelegramGenderChoicesAndFeedControls(t *testing.T) {
+	q := newTGQA(t)
+	q.message(92, "/start", nil)
+	q.message(92, "Анна", nil)
+	q.message(92, "21", nil)
+	for _, row := range q.last(92).Buttons {
+		for _, button := range row {
+			if button.Data == "gender:other" || button.Text == "Другое" {
+				t.Fatal("obsolete gender choice still shown")
+			}
+		}
+	}
+	q.click(92, "gender:other")
+	if q.state(92).Step != "gender" || q.state(92).DraftGender != "" {
+		t.Fatal("stale gender button was accepted")
+	}
+	q.register(93, "Лера", "female")
+	q.register(94, "Саша", "male")
+	q.click(93, "menu:feed")
+	card := q.last(93)
+	if len(card.Buttons) < 2 || len(card.Buttons[0]) != 2 || card.Buttons[0][0].Text != "❤️" || card.Buttons[0][1].Text != "👎" {
+		t.Fatalf("feed reactions are not emoji-only: %+v", card.Buttons)
+	}
+	peer := q.user(94)
+	block := card.Buttons[1][0]
+	if block.Text != "Заблокировать" || block.Data != fmt.Sprintf("block:%d", peer.ID) || block.Style != "danger" {
+		t.Fatalf("direct block action missing: %+v", block)
+	}
+	q.click(93, block.Data)
+	viewer := q.user(93)
+	if blocked, err := crud.IsPairBlocked(q.db, viewer.ID, peer.ID); err != nil || blocked || q.state(93).Step != "block" {
+		t.Fatalf("block confirmation was bypassed: %v, %v", blocked, err)
+	}
+	q.click(93, fmt.Sprintf("privacy:block:%d", peer.ID))
+	if blocked, err := crud.IsPairBlocked(q.db, viewer.ID, peer.ID); err != nil || !blocked {
+		t.Fatalf("confirmed block failed: %v, %v", blocked, err)
+	}
+}
+
+func TestTelegramContactsRequireAMatchAndTrackUsernameChanges(t *testing.T) {
+	q := newTGQA(t)
+	q.usernames[95], q.usernames[96] = "masha_test", "sasha_test"
+	q.register(95, "Маша", "female")
+	q.register(96, "Саша", "male")
+	me, peer := q.user(95), q.user(96)
+	if me.TelegramUsername != "masha_test" || peer.TelegramUsername != "sasha_test" {
+		t.Fatal("authenticated usernames were not saved during registration")
+	}
+	hasLink := func(delivery tgDelivery, link string) bool {
+		for _, row := range delivery.Buttons {
+			for _, button := range row {
+				if button.URL == link {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	q.click(95, "menu:feed")
+	if strings.Contains(q.last(95).Text, "sasha_test") || hasLink(q.last(95), "https://t.me/sasha_test") {
+		t.Fatal("feed disclosed a contact before a match")
+	}
+	q.click(95, fmt.Sprintf("write:%d", peer.ID))
+	if hasLink(q.last(95), "https://t.me/sasha_test") {
+		t.Fatal("legacy write callback bypassed mutual-like requirement")
+	}
+	q.click(95, fmt.Sprintf("like:%d", peer.ID))
+	if strings.Contains(q.last(96).Text, "masha_test") {
+		t.Fatal("incoming-like notification disclosed contact before a match")
+	}
+	q.click(96, fmt.Sprintf("like_back:%d", me.ID))
+	if !hasLink(q.last(95), "https://t.me/sasha_test") || !hasLink(q.last(96), "https://t.me/masha_test") {
+		t.Fatal("mutual match did not expose direct Telegram contacts to both participants")
+	}
+	q.click(95, fmt.Sprintf("write:%d", peer.ID))
+	q.message(95, "Не пересылай этот текст", nil)
+	if q.state(95).Step == "write" || q.count(96, "Не пересылай этот текст") != 0 {
+		t.Fatal("legacy button still starts bot-mediated chat")
+	}
+	q.must(q.db.Model(&models.BotSession{}).Where("channel = ? AND external_id = ?", "telegram", 95).
+		Updates(map[string]any{"step": "write", "peer_user_id": peer.ID}).Error)
+	q.message(95, "Старый черновик тоже не отправляй", nil)
+	if q.state(95).Step == "write" || q.count(96, "Старый черновик тоже не отправляй") != 0 {
+		t.Fatal("pre-upgrade draft still forwards text")
+	}
+	q.usernames[96] = "sasha_new"
+	q.message(96, "/start", nil)
+	q.click(95, fmt.Sprintf("match:%d", peer.ID))
+	if !hasLink(q.last(95), "https://t.me/sasha_new") || q.user(96).TelegramUsername != "sasha_new" {
+		t.Fatal("updated Telegram username was not refreshed")
+	}
+	q.usernames[96] = ""
+	q.message(96, "/start", nil)
+	q.click(95, fmt.Sprintf("match:%d", peer.ID))
+	if q.user(96).TelegramUsername != "" || !hasLink(q.last(95), "tg://user?id=96") {
+		t.Fatal("removed username did not fall back to Telegram profile link")
+	}
+	q.click(95, fmt.Sprintf("block:%d", peer.ID))
+	q.click(95, fmt.Sprintf("privacy:block:%d", peer.ID))
+	q.click(95, fmt.Sprintf("write:%d", peer.ID))
+	if hasLink(q.last(95), "tg://user?id=96") {
+		t.Fatal("blocked match still reveals its contact through stale callback")
+	}
 }
 
 func TestTelegramNativeLifecycle(t *testing.T) {
@@ -177,12 +309,12 @@ func TestTelegramNativeLifecycle(t *testing.T) {
 	}
 	q.click(51, fmt.Sprintf("write:%d", b.ID))
 	q.message(51, strings.Repeat("я", 1201), nil)
-	if q.state(51).Step != "write" {
-		t.Fatal("long message advanced draft")
+	if q.state(51).Step == "write" {
+		t.Fatal("legacy write action still starts message drafting")
 	}
 	q.message(51, "caption", map[string]any{"document": map[string]any{"file_id": "document"}})
-	if q.state(51).Step != "write" {
-		t.Fatal("document left draft")
+	if q.state(51).Step == "write" {
+		t.Fatal("attachment reopened retired message drafting")
 	}
 	q.message(51, "/cancel", nil)
 	if q.state(51).Step == "write" {
@@ -191,13 +323,13 @@ func TestTelegramNativeLifecycle(t *testing.T) {
 	q.click(51, fmt.Sprintf("write:%d", b.ID))
 	raw := q.message(51, "Один привет", nil)
 	q.post(raw)
-	if q.count(52, "Один привет") != 1 {
-		t.Fatal("Telegram webhook retry duplicated a message")
+	if q.count(52, "Один привет") != 0 {
+		t.Fatal("Telegram still relays text after a match")
 	}
 	q.click(52, fmt.Sprintf("write:%d", a.ID))
 	q.message(52, "Привет в ответ", nil)
-	if q.count(51, "Привет в ответ") != 1 {
-		t.Fatal("reply did not arrive")
+	if q.count(51, "Привет в ответ") != 0 {
+		t.Fatal("Telegram still relays replies")
 	}
 	q.click(51, "privacy:pause")
 	if _, err := crud.GetNextProfile(q.db, a.ID); err != crud.ErrProfilePaused {
@@ -205,8 +337,8 @@ func TestTelegramNativeLifecycle(t *testing.T) {
 	}
 	q.click(52, fmt.Sprintf("write:%d", a.ID))
 	q.message(52, "Сообщение во время паузы", nil)
-	if q.count(51, "Сообщение во время паузы") != 1 {
-		t.Fatal("pause broke an existing match")
+	if q.count(51, "Сообщение во время паузы") != 0 {
+		t.Fatal("bot still relays text during pause")
 	}
 	q.click(51, "privacy:resume")
 	q.click(52, fmt.Sprintf("write:%d", a.ID))
@@ -244,13 +376,13 @@ func TestTelegramNativeLifecycle(t *testing.T) {
 	}
 }
 
-func TestTelegramAlbumsReplacementAndRemoval(t *testing.T) {
+func TestTelegramAlbumsReplacementAndRequiredPhoto(t *testing.T) {
 	q := newTGQA(t)
 	q.register(61, "Лера", "female")
 	q.click(61, "photo:edit")
 	photos := []map[string]any{{"file_id": "photo-one", "width": 800, "height": 900}}
 	q.message(61, "", map[string]any{"photo": photos, "media_group_id": "album"})
-	if q.user(61).TelegramPhotoID != "" || q.state(61).Step != "edit_photo" {
+	if q.user(61).TelegramPhotoID != "registration-photo" || q.state(61).Step != "edit_photo" {
 		t.Fatal("album should not save its first photo")
 	}
 	q.message(61, "", map[string]any{"photo": photos})
@@ -264,8 +396,15 @@ func TestTelegramAlbumsReplacementAndRemoval(t *testing.T) {
 	}
 	q.click(61, "photo:edit")
 	q.click(61, "photo:remove")
-	if q.user(61).TelegramPhotoID != "" || !strings.HasSuffix(q.last(61).Method, "/sendMessage") {
-		t.Fatal("photo deletion still renders image")
+	if q.user(61).TelegramPhotoID != "photo-two" || q.state(61).Step != "edit_photo" {
+		t.Fatal("stale remove callback deleted the required photo")
+	}
+	for _, row := range q.last(61).Buttons {
+		for _, button := range row {
+			if button.Data == "photo:remove" {
+				t.Fatal("photo editor offers removal")
+			}
+		}
 	}
 }
 

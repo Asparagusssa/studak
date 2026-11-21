@@ -227,8 +227,8 @@ func TestMaxDatingFlow(t *testing.T) {
 	must(bot.onCallback(1001, "photo:edit"))
 	must(bot.onCallback(1001, "photo:remove"))
 	anna, err = crud.GetUserByMaxID(db, 1001)
-	if err != nil || anna.MaxPhotoToken != "" || anna.PhotoURL != "" {
-		t.Fatalf("photo was not removed: %+v, %v", anna, err)
+	if err != nil || anna.MaxPhotoToken != "new-photo" {
+		t.Fatalf("stale remove callback changed the required photo: %+v, %v", anna, err)
 	}
 
 	mu.Lock()
@@ -249,12 +249,12 @@ func TestMaxDatingFlow(t *testing.T) {
 		}
 	}
 	last := sent[len(sent)-1]
-	if strings.Contains(last, `"type":"image"`) {
-		t.Fatalf("photo still present in the card after removal: %s", last)
+	if strings.Contains(last, `"payload":"photo:remove"`) || !strings.Contains(last, "нельзя удалить") {
+		t.Fatalf("photo replacement prompt still permits removal: %s", last)
 	}
 }
 
-func TestPhotoStepCanBeSkipped(t *testing.T) {
+func TestPhotoStepCannotBeSkipped(t *testing.T) {
 	db, err := testDB(filepath.Join(t.TempDir(), "skip.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -280,9 +280,27 @@ func TestPhotoStepCanBeSkipped(t *testing.T) {
 	if err := bot.onCallback(1002, "photo:skip"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := crud.GetUserByMaxID(db, 1002); err != crud.ErrNotFound {
+		t.Fatalf("stale skip callback published a profile without a photo: %v", err)
+	}
+	for _, token := range []*string{nil, new(string)} {
+		if err := bot.finishOnboarding(session, token); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := crud.GetUserByMaxID(db, 1002); err != crud.ErrNotFound {
+		t.Fatalf("empty photo token published a profile: %v", err)
+	}
+	state, err := bot.session(1002)
+	if err != nil || state.Step != stepPhoto {
+		t.Fatalf("photo rejection discarded the registration: %+v, %v", state, err)
+	}
+	if err := bot.HandleBody(photoUpdate(1002, "lena-photo")); err != nil {
+		t.Fatal(err)
+	}
 	user, err := crud.GetUserByMaxID(db, 1002)
-	if err != nil || user.MaxPhotoToken != "" || user.Name != "Лена" || user.SearchGender != models.SearchGenderAll {
-		t.Fatalf("profile was not created without a photo: %+v, %v", user, err)
+	if err != nil || user.MaxPhotoToken != "lena-photo" || user.Name != "Лена" {
+		t.Fatalf("profile with required photo was not created: %+v, %v", user, err)
 	}
 }
 

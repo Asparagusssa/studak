@@ -29,9 +29,29 @@ func NewClient(token string) *Client {
 }
 
 type button struct {
-	Text string `json:"text"`
-	Data string `json:"callback_data,omitempty"`
-	URL  string `json:"url,omitempty"`
+	Text  string `json:"text"`
+	Data  string `json:"callback_data,omitempty"`
+	URL   string `json:"url,omitempty"`
+	Style string `json:"style"`
+}
+
+func buttonStyle(payload string) string {
+	kind, action, _ := strings.Cut(payload, ":")
+	switch kind {
+	case "like", "like_back", "pref_done":
+		return "success"
+	case "block", "more":
+		return "danger"
+	case "privacy":
+		action, _, _ = strings.Cut(action, ":")
+		switch action {
+		case "delete", "confirm_delete", "block":
+			return "danger"
+		case "resume", "unblock":
+			return "success"
+		}
+	}
+	return "primary"
 }
 
 func keyboard(rows [][]maxbot.Button) map[string]any {
@@ -39,7 +59,7 @@ func keyboard(rows [][]maxbot.Button) map[string]any {
 	for _, row := range rows {
 		buttons := make([]button, 0, len(row))
 		for _, b := range row {
-			buttons = append(buttons, button{Text: b.Text, Data: b.Payload, URL: b.URL})
+			buttons = append(buttons, button{Text: b.Text, Data: b.Payload, URL: b.URL, Style: buttonStyle(b.Payload)})
 		}
 		result = append(result, buttons)
 	}

@@ -32,6 +32,7 @@ type Actor struct {
 	ID        int64  `json:"id"`
 	FirstName string `json:"first_name"`
 	LastName  string `json:"last_name"`
+	Username  string `json:"username"`
 	IsBot     bool   `json:"is_bot"`
 }
 type Message struct {
@@ -71,7 +72,7 @@ type Update struct {
 }
 
 func actor(a Actor) maxbot.User {
-	return maxbot.User{UserID: a.ID, FirstName: strings.TrimSpace(a.FirstName + " " + a.LastName), IsBot: a.IsBot}
+	return maxbot.User{UserID: a.ID, FirstName: strings.TrimSpace(a.FirstName + " " + a.LastName), Username: a.Username, IsBot: a.IsBot}
 }
 
 func (b *Bot) ServeHTTP(w http.ResponseWriter, r *http.Request) {

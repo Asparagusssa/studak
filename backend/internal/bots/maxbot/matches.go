@@ -35,8 +35,8 @@ func (b *Bot) showIncoming(s *models.BotSession) error {
 		return err
 	}
 	return b.sendProfile(s.ExternalID, from, "💌 Ты понравился этому человеку", [][]Button{
-		{CallbackButton("💛 Ответить взаимностью", fmt.Sprintf("like_back:%d", from.ID)), CallbackButton("Пропустить", fmt.Sprintf("skip_in:%d", from.ID))},
-		{moreButton(from.ID), CallbackButton("В меню", "menu:home")},
+		{CallbackButton("❤️", fmt.Sprintf("like_back:%d", from.ID)), CallbackButton("👎", fmt.Sprintf("skip_in:%d", from.ID))},
+		{blockButton(from.ID), CallbackButton("В меню", "menu:home")},
 	})
 }
 
@@ -82,7 +82,7 @@ func (b *Bot) react(s *models.BotSession, rawID string, like, inbox bool) error 
 		return err
 	}
 	if res.NewMatch {
-		if b.canWrite(peer) {
+		if b.canNotify(peer) {
 			// Delivery may be unavailable if the recipient stopped the bot.
 			// The match can still be reopened from the saved list.
 			client, id, channel := b.destination(peer)
@@ -90,7 +90,7 @@ func (b *Bot) react(s *models.BotSession, rawID string, like, inbox bool) error 
 		}
 		return b.sendMatch(s.ExternalID, peer)
 	}
-	if b.canWrite(peer) {
+	if b.canNotify(peer) {
 		_ = b.notify(peer, "У тебя новый лайк 💌\nПосмотри анкету и реши, взаимно ли это.", [][]Button{
 			{CallbackButton("Посмотреть лайк", "menu:incoming")},
 		})
@@ -104,18 +104,16 @@ func (b *Bot) sendMatch(viewer int64, peer *models.User) error {
 
 func (b *Bot) matchText(peer *models.User) string {
 	text := fmt.Sprintf("Твой мэтч — %s, %d.", peer.Name, peer.Age)
-	if b.canWrite(peer) {
-		return text + "\nМожно написать через бота."
-	}
-	return text + "\nДля этой анкеты переписка через бота пока недоступна."
+	contact, _, _ := b.contactDetails(peer)
+	return text + "\n\n" + contact
 }
 
 func (b *Bot) matchKeyboard(peer *models.User) [][]Button {
 	var rows [][]Button
-	if b.canWrite(peer) {
-		rows = append(rows, []Button{CallbackButton("💬 Написать", fmt.Sprintf("write:%d", peer.ID))})
+	if _, label, link := b.contactDetails(peer); link != "" {
+		rows = append(rows, []Button{{Type: "link", Text: label, URL: link}})
 	}
-	return append(rows, []Button{CallbackButton("Мои мэтчи", "matches:0"), moreButton(peer.ID)})
+	return append(rows, []Button{CallbackButton("Мои мэтчи", "matches:0"), blockButton(peer.ID)})
 }
 
 func (b *Bot) showMatches(s *models.BotSession, offset int) error {
@@ -137,7 +135,7 @@ func (b *Bot) showMatches(s *models.BotSession, offset int) error {
 	if len(users) == 0 && offset > 0 {
 		return b.showMatches(s, 0)
 	}
-	text := "Мои мэтчи 💛\nВыбери анкету, чтобы открыть её и написать."
+	text := "Мои мэтчи 💛\nВыбери анкету, чтобы получить контакт и познакомиться напрямую."
 	rows := make([][]Button, 0, pageSize+2)
 	for _, person := range users[:min(len(users), pageSize)] {
 		label := []rune(strings.Join(strings.Fields(fmt.Sprintf("%s, %d", person.Name, person.Age)), " "))

@@ -3,7 +3,7 @@ package models
 import "time"
 
 // Like stores any reaction of one user to another. IsLike=false is a dislike;
-// both kinds exclude the target from the user's feed.
+// likes exclude the target indefinitely, while dislikes hide it for a cooldown.
 type Like struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
 	FromUserID uint      `gorm:"not null;uniqueIndex:idx_like_pair;check:chk_likes_not_self,from_user_id <> to_user_id" json:"from_user_id"`

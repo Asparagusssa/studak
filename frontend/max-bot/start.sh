@@ -10,12 +10,15 @@ if [ ! -f .env ]; then
 fi
 
 usage() {
-  printf '%s\n' 'Использование: start.sh [--dev-tunnel | https://публичный-адрес]' >&2
+  printf '%s\n' 'Использование: start.sh [--ngrok | --dev-tunnel | https://публичный-адрес]' >&2
   exit 2
 }
 [ "$#" -le 1 ] || usage
 
 case "${1:-}" in
+  --ngrok)
+    exec sh ./start-ngrok.sh
+    ;;
   --dev-tunnel)
     tunnel=studak-max-dev-tunnel
     if [ "$(docker inspect -f '{{.State.Running}}' "$tunnel" 2>/dev/null || true)" != true ]; then

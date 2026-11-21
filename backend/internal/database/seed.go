@@ -1,12 +1,17 @@
 package database
 
 import (
+	_ "embed"
+	"encoding/json"
 	"fmt"
 
 	"gorm.io/gorm"
 
 	"studak/internal/models"
 )
+
+//go:embed udmurtia_institutions.json
+var udmurtiaInstitutionsJSON []byte
 
 var defaultUniversities = []models.University{
 	{Name: "Московский государственный университет имени М.В. Ломоносова", ShortName: "МГУ"},
@@ -28,8 +33,15 @@ var defaultUniversities = []models.University{
 
 // SeedUniversities is idempotent: existing rows (matched by Name) are left as is.
 func SeedUniversities(db *gorm.DB) error {
+	var region struct {
+		Institutions []models.University `json:"institutions"`
+	}
+	if err := json.Unmarshal(udmurtiaInstitutionsJSON, &region); err != nil {
+		return fmt.Errorf("decode Udmurtia institutions: %w", err)
+	}
+	universities := append(append([]models.University{}, defaultUniversities...), region.Institutions...)
 	return db.Transaction(func(tx *gorm.DB) error {
-		for _, u := range defaultUniversities {
+		for _, u := range universities {
 			uni := u
 			if err := tx.Where(models.University{Name: uni.Name}).FirstOrCreate(&uni).Error; err != nil {
 				return fmt.Errorf("seed %q: %w", uni.Name, err)

@@ -65,7 +65,7 @@ func testDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-func TestTelegramSameFlowAndCrossPlatformMatches(t *testing.T) {
+func TestTelegramSameFlowAndCrossPlatformContacts(t *testing.T) {
 	db := testDB(t)
 	must := func(err error) {
 		t.Helper()
@@ -103,7 +103,7 @@ func TestTelegramSameFlowAndCrossPlatformMatches(t *testing.T) {
 
 	// The same numeric messenger ID is intentionally used on both platforms.
 	maxID := int64(101)
-	maxUser, err := crud.CreateUser(db, crud.CreateUserInput{MaxID: &maxID, Name: "Борис", Age: 22, Gender: "male"})
+	maxUser, err := crud.CreateUser(db, crud.CreateUserInput{MaxID: &maxID, Name: "Борис", Age: 22, Gender: "male", MaxProfileURL: "https://max.ru/u/max101"})
 	must(err)
 	seq := 0
 	event := func(value map[string]any, secret string) int {
@@ -125,11 +125,11 @@ func TestTelegramSameFlowAndCrossPlatformMatches(t *testing.T) {
 	}
 	message := func(text string) {
 		t.Helper()
-		post(map[string]any{"message": map[string]any{"message_id": seq + 1, "from": map[string]any{"id": 101, "first_name": "Аня"}, "chat": map[string]any{"id": 101, "type": "private"}, "text": text}})
+		post(map[string]any{"message": map[string]any{"message_id": seq + 1, "from": map[string]any{"id": 101, "first_name": "Аня", "username": "anya_test"}, "chat": map[string]any{"id": 101, "type": "private"}, "text": text}})
 	}
 	callback := func(data string) {
 		t.Helper()
-		post(map[string]any{"callback_query": map[string]any{"id": fmt.Sprintf("cb-%d", seq+1), "from": map[string]any{"id": 101}, "message": map[string]any{"chat": map[string]any{"id": 101, "type": "private"}}, "data": data}})
+		post(map[string]any{"callback_query": map[string]any{"id": fmt.Sprintf("cb-%d", seq+1), "from": map[string]any{"id": 101, "username": "anya_test"}, "message": map[string]any{"chat": map[string]any{"id": 101, "type": "private"}}, "data": data}})
 	}
 	if code := event(map[string]any{}, "wrong"); code != 401 {
 		t.Fatalf("invalid secret accepted: %d", code)
@@ -146,7 +146,7 @@ func TestTelegramSameFlowAndCrossPlatformMatches(t *testing.T) {
 	callback("mode:all")
 	message("Люблю кино и прогулки")
 	post(map[string]any{"message": map[string]any{
-		"message_id": seq + 1, "from": map[string]any{"id": 101}, "chat": map[string]any{"id": 101, "type": "private"},
+		"message_id": seq + 1, "from": map[string]any{"id": 101, "username": "anya_test"}, "chat": map[string]any{"id": 101, "type": "private"},
 		"photo": []map[string]any{{"file_id": "small-file", "width": 80, "height": 100}, {"file_id": "big-file", "width": 800, "height": 1000}},
 	}})
 	user, err := crud.GetUserByTelegramID(db, 101)
@@ -178,16 +178,16 @@ func TestTelegramSameFlowAndCrossPlatformMatches(t *testing.T) {
 	mu.Lock()
 	mx := strings.Join(maxSent, "\n")
 	mu.Unlock()
-	if !strings.Contains(mx, "Привет из Telegram") {
-		t.Fatalf("cross-platform message not delivered to MAX: %s", mx)
+	if strings.Contains(mx, "Привет из Telegram") || !strings.Contains(mx, "https://t.me/anya_test") {
+		t.Fatalf("MAX should receive Telegram contact, not relayed text: %s", mx)
 	}
 	must(max.HandleUpdate(maxbot.Update{UpdateType: "message_callback", Callback: &maxbot.Callback{CallbackID: "max-write", User: maxbot.User{UserID: 101}, Payload: fmt.Sprintf("write:%d", user.ID)}}))
 	must(max.HandleUpdate(maxbot.Update{UpdateType: "message_created", Message: &maxbot.Message{Sender: maxbot.User{UserID: 101}, Recipient: maxbot.Recipient{ChatType: "dialog"}, Body: maxbot.Body{Mid: "reply-from-max", Text: "Привет из MAX"}}}))
 	mu.Lock()
 	tgMessages := strings.Join(tgSent, "\n")
 	mu.Unlock()
-	if !strings.Contains(tgMessages, "Привет из MAX") {
-		t.Fatal("reply from MAX not routed to Telegram")
+	if strings.Contains(tgMessages, "Привет из MAX") || !strings.Contains(tgMessages, "https://max.ru/u/max101") {
+		t.Fatal("Telegram should receive MAX contact, not relayed text")
 	}
 
 	callback("privacy:pause")

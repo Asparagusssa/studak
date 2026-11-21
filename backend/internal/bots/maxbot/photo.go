@@ -2,6 +2,7 @@ package maxbot
 
 import (
 	"errors"
+	"strings"
 
 	"studak/internal/crud"
 	"studak/internal/logx"
@@ -18,16 +19,17 @@ func (b *Bot) beginPhoto(s *models.BotSession, step string) error {
 
 func (b *Bot) askPhoto(s *models.BotSession, intro string) error {
 	if s.Step == stepEditPhoto {
-		return b.send(s.ExternalID, withIntro(intro, "Пришли одно фото для анкеты. Другие участники смогут его увидеть в боте."), [][]Button{
-			{CallbackButton("Убрать фото", "photo:remove"), CallbackButton("Назад к анкете", "menu:profile")},
+		return b.send(s.ExternalID, withIntro(intro, "Пришли одно новое фото для анкеты. Другие участники смогут его увидеть в боте. Фото можно заменить, но нельзя удалить."), [][]Button{
+			{CallbackButton("Назад к анкете", "menu:profile")},
 		})
 	}
-	return b.send(s.ExternalID, withIntro(intro, "8/8 · Добавим фото? Пришли одно изображение — его увидят другие участники в боте. Этот шаг можно пропустить."), [][]Button{
-		{CallbackButton("Пропустить", "photo:skip")},
-	})
+	return b.send(s.ExternalID, withIntro(intro, "8/8 · Добавь фото для анкеты. Пришли одно изображение через галерею — его увидят другие участники в боте. Фото обязательно для публикации."), nil)
 }
 
 func (b *Bot) updatePhoto(s *models.BotSession, token string) error {
+	if strings.TrimSpace(token) == "" {
+		return b.askPhoto(s, "Фото обязательно: его можно заменить, но нельзя удалить.")
+	}
 	user, err := b.appUser(s)
 	if err != nil {
 		return err
@@ -40,21 +42,28 @@ func (b *Bot) updatePhoto(s *models.BotSession, token string) error {
 	if err := b.saveSession(s); err != nil {
 		return err
 	}
-	message := "Фото обновлено ✨"
-	if token == "" {
-		message = "Фото убрано из анкеты."
-	}
-	return b.sendOwn(s, user, message)
+	return b.sendOwn(s, user, "Фото обновлено ✨")
 }
 
 func (b *Bot) sendOwn(s *models.BotSession, user *models.User, intro string) error {
 	if user.Paused {
 		intro += "\nАнкета на паузе"
 	}
-	return b.sendProfile(s.ExternalID, user, intro, [][]Button{
+	rows := [][]Button{
 		{CallbackButton("📷 Фото", "photo:edit"), CallbackButton("Изменить анкету", "menu:reset")},
-		{CallbackButton("В меню", "menu:home")},
-	})
+	}
+	if b.channel() == channelMax {
+		rows = append(rows, []Button{CallbackButton("Контакт MAX", "contact:edit")})
+		if user.MaxProfileURL != "" {
+			intro += "\nТвой контакт MAX: " + user.MaxProfileURL
+		}
+	} else if user.TelegramUsername != "" {
+		intro += "\nТвой контакт Telegram: @" + user.TelegramUsername
+	} else {
+		intro += "\nUsername Telegram не указан: после мэтча будет доступна ссылка на профиль."
+	}
+	rows = append(rows, []Button{CallbackButton("В меню", "menu:home")})
+	return b.sendProfile(s.ExternalID, user, intro, rows)
 }
 
 func (b *Bot) sendProfile(recipient int64, user *models.User, intro string, keyboard [][]Button) error {
