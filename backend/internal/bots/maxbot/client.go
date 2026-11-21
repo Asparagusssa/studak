@@ -45,6 +45,14 @@ func (c *Client) Send(userID int64, text string, keyboard [][]Button) error {
 }
 
 func (c *Client) SendContext(ctx context.Context, userID int64, text string, keyboard [][]Button) error {
+	return c.sendMessage(ctx, userID, text, keyboard, nil)
+}
+
+func (c *Client) SendPhotoContext(ctx context.Context, userID int64, text string, keyboard [][]Button, photo map[string]string) error {
+	return c.sendMessage(ctx, userID, text, keyboard, photo)
+}
+
+func (c *Client) sendMessage(ctx context.Context, userID int64, text string, keyboard [][]Button, photo map[string]string) error {
 	if c == nil || c.Token == "" {
 		return fmt.Errorf("max token is empty")
 	}
@@ -52,15 +60,18 @@ func (c *Client) SendContext(ctx context.Context, userID int64, text string, key
 		return fmt.Errorf("invalid MAX user_id")
 	}
 	body := map[string]any{"text": text}
+	attachments := make([]any, 0, 2)
+	if len(photo) > 0 {
+		attachments = append(attachments, map[string]any{"type": "image", "payload": photo})
+	}
 	if len(keyboard) > 0 {
-		body["attachments"] = []any{
-			map[string]any{
-				"type": "inline_keyboard",
-				"payload": map[string]any{
-					"buttons": keyboard,
-				},
-			},
-		}
+		attachments = append(attachments, map[string]any{
+			"type":    "inline_keyboard",
+			"payload": map[string]any{"buttons": keyboard},
+		})
+	}
+	if len(attachments) > 0 {
+		body["attachments"] = attachments
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -99,15 +110,42 @@ func (c *Client) AnswerCallbackContext(ctx context.Context, callbackID, notifica
 	return c.do(req)
 }
 
+type apiError struct {
+	Method, Path, Code string
+	Status             int
+}
+
+func (e *apiError) PhotoUnavailable() bool {
+	return strings.HasPrefix(e.Code, "attachment.") || e.Status == http.StatusUnsupportedMediaType
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("max API %s %s: HTTP %d %s", e.Method, e.Path, e.Status, e.Code)
+}
+
 func (c *Client) do(req *http.Request) error {
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	reader := io.LimitReader(resp.Body, 1<<20)
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("max API %s %s: HTTP %d %s", req.Method, req.URL.Path, resp.StatusCode, strings.TrimSpace(string(raw)))
+		var failure struct {
+			Code string `json:"code"`
+		}
+		_ = json.NewDecoder(reader).Decode(&failure)
+		return &apiError{Method: req.Method, Path: req.URL.Path, Status: resp.StatusCode, Code: failure.Code}
+	}
+	var result struct {
+		Success *bool  `json:"success"`
+		Code    string `json:"code"`
+	}
+	if err := json.NewDecoder(reader).Decode(&result); err != nil {
+		return fmt.Errorf("max API %s: invalid JSON response", req.URL.Path)
+	}
+	if result.Success != nil && !*result.Success {
+		return &apiError{Method: req.Method, Path: req.URL.Path, Status: resp.StatusCode, Code: result.Code}
 	}
 	return nil
 }

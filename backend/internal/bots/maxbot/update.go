@@ -51,8 +51,30 @@ type Recipient struct {
 }
 
 type Body struct {
-	Mid  string `json:"mid"`
-	Text string `json:"text"`
+	Mid         string       `json:"mid"`
+	Text        string       `json:"text"`
+	Attachments []Attachment `json:"attachments"`
+}
+
+type Attachment struct {
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+func (b Body) imageToken() (token string, count int) {
+	for _, a := range b.Attachments {
+		if a.Type != "image" {
+			continue
+		}
+		count++
+		var image struct {
+			Token string `json:"token"`
+		}
+		if json.Unmarshal(a.Payload, &image) == nil {
+			token = strings.TrimSpace(image.Token)
+		}
+	}
+	return token, count
 }
 
 type Callback struct {

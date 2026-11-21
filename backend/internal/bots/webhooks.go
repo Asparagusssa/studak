@@ -83,7 +83,8 @@ func registerTelegram(token, secret, hookURL string) error {
 		return fmt.Errorf("invalid Telegram bot token format")
 	}
 	payload := map[string]any{
-		"url": hookURL,
+		"url":             hookURL,
+		"allowed_updates": []string{"message", "callback_query"},
 	}
 	if secret != "" {
 		payload["secret_token"] = secret
